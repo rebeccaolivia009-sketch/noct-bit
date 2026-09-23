@@ -606,3 +606,29 @@ def badge_panel_container(
         children.append(discord.ui.MediaGallery(discord.MediaGalleryItem(media=banner_url)))
 
     return discord.ui.Container(*children, accent_colour=COLOR_PRIMARY)
+
+
+def invite_panel_container(
+    title: str,
+    description: str,
+    banner_url: str | None = None,
+) -> discord.ui.Container:
+    """Isi panel /invite panel -- tata letak SENGAJA linear, beda dari
+    badge_panel_container (thumbnail nempel sejajar judul): banner (kalau
+    ada) full-width paling atas, lalu pemisah -> judul -> pemisah ->
+    deskripsi -> pemisah. Caller (bot.ui.views.InvitePanelView) nempelin
+    ActionRow tombol (Generate Link Server + Aturan Main) langsung
+    SETELAH container ini di-return, disusul pemisah lagi + footer
+    credit, biar urutan akhirnya persis: banner -> pemisah -> judul ->
+    pemisah -> deskripsi -> pemisah -> tombol -> pemisah -> footer."""
+    children: list = []
+    if banner_url:
+        children.append(discord.ui.MediaGallery(discord.MediaGalleryItem(media=banner_url)))
+        children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+    children.append(discord.ui.TextDisplay(f"## {title}"))
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+    children.append(discord.ui.TextDisplay(description))
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+    return discord.ui.Container(*children, accent_colour=COLOR_PRIMARY)

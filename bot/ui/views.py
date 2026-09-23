@@ -44,6 +44,7 @@ from bot.database.queries import (
 )
 from bot.database.queries import cards as cards_q
 from bot.database.queries import giveaways as giveaways_q
+from bot.database.queries import invites as invites_q
 from bot.database.queries import leaderboard as lb_q
 from bot.database.queries import ticket_types as ticket_types_q
 from bot.ui import components, embeds
@@ -1939,3 +1940,136 @@ class BadgePanelView(discord.ui.LayoutView):
 
         from bot.utils.leaderboard import refresh_leaderboard
         await refresh_leaderboard(interaction.client)
+
+
+# ============================================================================
+# PANEL INVITE TRACKER -- tombol "Generate Link Server" (invite personal
+# per user, reuse kalau udah pernah generate sebelumnya) + "Aturan Main"
+# (nunjukin teks aturan yang staff atur lewat /invite settings rules,
+# ephemeral). Persistent (custom_id tetap): "noctra:invite:generate" /
+# "noctra:invite:rules". Listener join/leave & command settingnya ada di
+# bot.cogs.invite_tracker.
+#
+# PENTING soal Aturan Main: teksnya SENGAJA gak dibaked ke instance ini
+# (beda dari title/description/banner yang murni visual dan udah
+# ke-render permanen di pesan Discord-nya) -- interaction persistent
+# selalu di-handle instance GENERIC yang didaftarin bot.py lewat
+# add_view(InvitePanelView()) (args default), BUKAN instance spesifik
+# yang dibikin /invite panel. Makanya _rules_callback query live ke DB
+# tiap diklik, biar perubahan lewat /invite settings rules langsung
+# kepake ke SEMUA panel yang udah keposting, gak cuma yang baru.
+# ============================================================================
+
+class InvitePanelView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        *,
+        title: str = "\U0001F3AF INVITE EVENT -- NOCTRA STORE",
+        description: str = (
+            "Ajakin temen kamu gabung ke sini -- tiap orang yang join lewat link kamu bakal kehitung "
+            "otomatis. Makin banyak yang kamu invite, makin gede peluang kamu menang hadiahnya!"
+        ),
+        banner_url: str | None = None,
+        footer_text: str = "-# NOCTRA STORE  \u2022  Invite Event",
+        emoji_generate: str | discord.PartialEmoji = "\U0001F517",
+        emoji_rules: str | discord.PartialEmoji = "\U0001F4DC",
+    ) -> None:
+        super().__init__(timeout=None)
+        container = components.invite_panel_container(title, description, banner_url)
+
+        generate_button = discord.ui.Button(
+            label="Generate Link Server", style=discord.ButtonStyle.primary,
+            custom_id="noctra:invite:generate", emoji=emoji_generate,
+        )
+        generate_button.callback = self._generate_callback
+        rules_button = discord.ui.Button(
+            label="Aturan Main", style=discord.ButtonStyle.secondary,
+            custom_id="noctra:invite:rules", emoji=emoji_rules,
+        )
+        rules_button.callback = self._rules_callback
+
+        container.add_item(discord.ui.ActionRow(generate_button, rules_button))
+        container.add_item(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+        container.add_item(discord.ui.TextDisplay(footer_text))
+        self.add_item(container)
+
+    async def _generate_callback(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.user, discord.Member) or interaction.guild is None:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Command ini cuma bisa dipake di dalem server."), ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        db = interaction.client.db  # type: ignore[attr-defined]
+        guild = interaction.guild
+
+        # Reuse link lama kalau user ini udah pernah generate & invite-nya
+        # masih valid -- biar gak numpuk invite baru tiap klik ulang.
+        existing = await invites_q.get_existing_link_for_owner(db, guild.id, interaction.user.id)
+        if existing:
+            try:
+                current_invites = await guild.invites()
+                match = next((inv for inv in current_invites if inv.code == existing["code"]), None)
+                if match:
+                    total = await invites_q.get_active_count(db, guild.id, interaction.user.id)
+                    await interaction.followup.send(
+                        embed=embeds.success_embed(
+                            f"Link kamu: **https://discord.gg/{match.code}**\n\n"
+                            f"Total yang udah join lewat kamu (masih di server): **{total} orang**."
+                        ),
+                        ephemeral=True,
+                    )
+                    return
+            except discord.Forbidden:
+                pass  # lanjut coba bikin baru di bawah
+
+        target_channel = (
+            guild.rules_channel or guild.system_channel
+            or next(
+                (c for c in guild.text_channels if c.permissions_for(guild.me).create_instant_invite),
+                None,
+            )
+        )
+        if target_channel is None:
+            await interaction.followup.send(
+                embed=embeds.error_embed("Bot gak nemu channel yang bisa dipake buat bikin invite di server ini."),
+                ephemeral=True,
+            )
+            return
+
+        try:
+            invite = await target_channel.create_invite(
+                max_age=0, max_uses=0, unique=True,
+                reason=f"Invite tracker -- digenerate {interaction.user} lewat panel.",
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                embed=embeds.error_embed(
+                    "Bot gak punya izin bikin invite di server ini (butuh permission Create Invite)."
+                ),
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException:
+            await interaction.followup.send(
+                embed=embeds.error_embed("Gagal bikin link invite, coba lagi beberapa saat lagi."), ephemeral=True
+            )
+            return
+
+        await invites_q.save_invite_link(db, invite.code, guild.id, interaction.user.id)
+
+        await interaction.followup.send(
+            embed=embeds.success_embed(
+                f"Link kamu udah jadi: **{invite.url}**\n\n"
+                "Share ke temen kamu -- tiap yang join lewat link ini otomatis kehitung di leaderboard."
+            ),
+            ephemeral=True,
+        )
+
+    async def _rules_callback(self, interaction: discord.Interaction) -> None:
+        db = interaction.client.db  # type: ignore[attr-defined]
+        rules_text = await RuntimeSettings(db).invite_rules_text() or "Belum ada aturan main yang diatur staff."
+        await interaction.response.send_message(
+            embed=embeds.info_embed("Aturan Main -- Invite Event", rules_text), ephemeral=True
+        )
