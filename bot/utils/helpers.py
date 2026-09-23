@@ -467,3 +467,27 @@ class RuntimeSettings:
 
     async def testi_proof_emoji_testi(self) -> str:
         return str(await self._get("testi_proof_emoji_testi", "\U0001F31F"))
+
+    # -- Invite Tracker (/invite) ------------------------------------------
+    # notif_channel & leaderboard_channel GLOBAL (bukan guild_scoped_key)
+    # -- konsisten sama leaderboard_channel_id punya Top Spenders, satu
+    # config buat satu instance bot. leaderboard_message_id-nya sendiri
+    # yang per-guild (lihat bot.database.queries.invites), soalnya satu
+    # instance bot yang numpang di banyak server tetep butuh nge-track
+    # pesan leaderboard yang beda-beda per server.
+
+    async def invite_notif_channel_id(self) -> int | None:
+        """Channel tempat notif "siapa invite siapa" diposting tiap ada
+        join/leave yang ke-attribute ke invite tracker -- diatur lewat
+        /invite settings notif_channel."""
+        value = await self._get("invite_notif_channel_id", None)
+        return int(value) if value else None
+
+    async def invite_leaderboard_channel_id(self) -> int | None:
+        value = await self._get("invite_leaderboard_channel_id", None)
+        return int(value) if value else None
+
+    async def invite_rules_text(self) -> str | None:
+        """Isi tombol "Aturan Main" di panel /invite -- diatur lewat
+        /invite settings rules. None kalau staff belum pernah atur."""
+        return await self._get("invite_rules_text", None)
