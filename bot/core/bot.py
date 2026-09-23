@@ -36,6 +36,7 @@ EXTENSIONS = (
     "bot.cogs.giveaway",
     "bot.cogs.shipment",
     "bot.cogs.badge",
+    "bot.cogs.invite_tracker",
 )
 
 
@@ -135,6 +136,7 @@ class NoctraBot(commands.Bot):
             TicketTypeSelectView,
             CardPanelView,
             BadgePanelView,
+            InvitePanelView,
         )
 
         self.add_view(ShopPanelView())
@@ -145,6 +147,7 @@ class NoctraBot(commands.Bot):
         self.add_view(TicketTypeSelectView())
         self.add_view(CardPanelView())
         self.add_view(BadgePanelView())
+        self.add_view(InvitePanelView())
         logger.info("Persistent views registered.")
 
     def _register_dynamic_items(self) -> None:
