@@ -305,3 +305,37 @@ CREATE TABLE IF NOT EXISTS leaderboard_badges (
     color_to    TEXT NOT NULL,
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Invite tracker -- dipake buat event berhadiah "siapa invite paling
+-- banyak". Dua tabel:
+--   * invite_links: override kepemilikan invite code yang di-GENERATE BOT
+--     lewat tombol "Generate Link Server" di panel -- WAJIB, soalnya kalau
+--     bot yang manggil create_invite(), field invite.inviter dari Discord
+--     bakal keisi akun BOT itu sendiri, bukan user yang klik tombolnya.
+--     Invite yang dibikin manual staff lewat UI Discord (bukan lewat bot)
+--     gak perlu masuk sini -- attribution-nya diambil langsung dari
+--     invite.inviter yang beneran akurat buat kasus itu (lihat
+--     bot.cogs.invite_tracker.on_member_join).
+--   * invite_members: SATU baris per (guild, member) yang lagi/pernah
+--     ke-track -- active=1 selama member itu masih di server. Pas member
+--     keluar, active jadi 0 (bukan dihapus, histori tetep ada), jadi
+--     ranking top inviter (SUM WHERE active=1) otomatis turun kalau
+--     member yang dia invite keluar -- ini yang bikin anti-curang-nya
+--     jalan tanpa job terjadwal, cukup listener on_member_remove.
+CREATE TABLE IF NOT EXISTS invite_links (
+    code        TEXT PRIMARY KEY,
+    guild_id    INTEGER NOT NULL,
+    owner_id    INTEGER NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS invite_members (
+    guild_id    INTEGER NOT NULL,
+    member_id   INTEGER NOT NULL,
+    inviter_id  INTEGER NOT NULL,
+    invite_code TEXT,
+    joined_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    left_at     TEXT,
+    active      INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (guild_id, member_id)
+);
