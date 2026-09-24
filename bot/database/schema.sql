@@ -370,3 +370,23 @@ CREATE TABLE IF NOT EXISTS roblox_catalog_items (
     position    INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- State panel toko (/settings shop_panel) -- disimpen biar footer "Terakhir
+-- update" bisa di-refresh OTOMATIS tiap 10 detik (lihat
+-- bot.cogs.shop_panel_task) tanpa staff perlu posting ulang manual, dan
+-- biar tetep jalan abis bot restart. SATU baris per guild -- posting
+-- ulang /settings shop_panel di guild yang sama NIMPA baris ini (bukan
+-- nambah baris baru), soalnya cuma SATU panel toko yang dianggep
+-- "aktif" per server.
+CREATE TABLE IF NOT EXISTS shop_panel_state (
+    guild_id      INTEGER PRIMARY KEY,
+    channel_id    INTEGER NOT NULL,
+    message_id    INTEGER NOT NULL,
+    title         TEXT NOT NULL,
+    description   TEXT NOT NULL,
+    banner_url    TEXT,
+    thumbnail_url TEXT,
+    button_label  TEXT NOT NULL,
+    button_emoji  TEXT,
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
