@@ -300,7 +300,7 @@ class ShopPanelView(discord.ui.LayoutView):
 
         ts = updated_at or datetime.now(timezone.utc)
         footer_text = discord.ui.TextDisplay(
-            "-# \u00A9 Credit by Noctra Digital Store \u2014 Category panel \u2014 update panel otomatis nya\n"
+            "-# \u00A9 Credit by Noctra Digital Store \u2014 Category panel \u2014 Find your game in here\n"
             f"-# Terakhir update: {ts.strftime('%d %b %Y, %H:%M:%S UTC')}"
         )
         footer_block = (
