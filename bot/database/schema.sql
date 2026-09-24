@@ -340,21 +340,18 @@ CREATE TABLE IF NOT EXISTS invite_members (
     PRIMARY KEY (guild_id, member_id)
 );
 
--- Listing item Roblox limited -- panel slideshow (navigasi gambar
--- Sebelumnya/Selanjutnya + tombol link beli/trade). Gambar-gambarnya
--- staff upload sendiri satu-satu lewat /roblox image add (BUKAN
--- di-generate bot), makanya kepisah ke tabel sendiri (satu listing bisa
--- punya banyak gambar). current_index nyimpen gambar mana yang lagi
--- ditampilin di panel -- SATU state per listing yang keliatan sama buat
--- SEMUA orang yang liat channel-nya (bukan per-viewer), lihat
--- bot.ui.views.RobloxSlideButton.
-CREATE TABLE IF NOT EXISTS roblox_listings (
+-- Katalog item Roblox limited -- SATU panel, geser Sebelumnya/Selanjutnya
+-- buat pindah ANTAR ITEM (beda item, beda gambar, beda stock/harga, beda
+-- link -- BUKAN banyak foto dari satu item yang sama). Staff nambahin
+-- item satu-satu lewat /roblox item add, makanya item kepisah ke tabel
+-- sendiri (satu katalog bisa punya banyak item). current_index nyimpen
+-- item ke berapa yang lagi ditampilin -- SATU state per katalog yang
+-- keliatan sama buat SEMUA orang yang liat channel-nya (bukan
+-- per-viewer), lihat bot.ui.views.RobloxSlideButton.
+CREATE TABLE IF NOT EXISTS roblox_catalogs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id      INTEGER NOT NULL,
-    title         TEXT NOT NULL,
-    stock_info    TEXT NOT NULL,
-    link_label    TEXT NOT NULL DEFAULT 'Beli Sekarang',
-    link_url      TEXT NOT NULL,
+    panel_title   TEXT NOT NULL DEFAULT 'KATALOG ITEM LIMITED',
     current_index INTEGER NOT NULL DEFAULT 0,
     channel_id    INTEGER,
     message_id    INTEGER,
@@ -362,9 +359,14 @@ CREATE TABLE IF NOT EXISTS roblox_listings (
     updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS roblox_listing_images (
+CREATE TABLE IF NOT EXISTS roblox_catalog_items (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    listing_id  INTEGER NOT NULL REFERENCES roblox_listings(id) ON DELETE CASCADE,
+    catalog_id  INTEGER NOT NULL REFERENCES roblox_catalogs(id) ON DELETE CASCADE,
+    item_title  TEXT NOT NULL,
     image_url   TEXT NOT NULL,
-    position    INTEGER NOT NULL DEFAULT 0
+    stock_info  TEXT NOT NULL,
+    link_label  TEXT NOT NULL DEFAULT 'Beli Sekarang',
+    link_url    TEXT NOT NULL,
+    position    INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
