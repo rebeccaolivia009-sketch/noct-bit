@@ -54,25 +54,25 @@ def _footer_line(extra: str | None = None) -> str:
 def shop_panel_container(
     title: str,
     description: str,
-    image_url: str | None = None,
-    thumbnail_url: str | None = None,
+    banner_url: str | None = None,
 ) -> discord.ui.Container:
-    """Isi panel /settings shop_panel -- staff isi title/description/gambar
-    sendiri lewat parameter command, jadi teks (termasuk bullet list custom
-    kayak "» ...") dirender apa adanya, gak diapa-apain sama builder ini.
-    Gak ada footer text di sini biar clean -- tombolnya (ditempel sama
-    ShopPanelView) udah cukup nutup card-nya."""
-    header_text = discord.ui.TextDisplay(f"## {title}\n{description}")
-    header = (
-        discord.ui.Section(header_text, accessory=discord.ui.Thumbnail(media=thumbnail_url))
-        if thumbnail_url
-        else header_text
-    )
-
-    children: list = [header]
-    if image_url:
+    """Isi panel /settings shop_panel -- tata letak linear sesuai spek:
+    banner full-width PALING ATAS -> pemisah -> judul -> pemisah ->
+    deskripsi -> pemisah. Caller (bot.ui.views.ShopPanelView) nempelin
+    ActionRow tombol + pemisah + footer (teks credit + jam update
+    otomatis, thumbnail nempel di pojok kanan lewat Section accessory)
+    langsung SETELAH container ini di-return -- footer BUKAN di sini
+    soalnya isinya (jam) berubah tiap refresh, beda siklus hidup sama
+    banner/judul/deskripsi yang statis dari command."""
+    children: list = []
+    if banner_url:
+        children.append(discord.ui.MediaGallery(discord.MediaGalleryItem(media=banner_url)))
         children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
-        children.append(discord.ui.MediaGallery(discord.MediaGalleryItem(media=image_url)))
+
+    children.append(discord.ui.TextDisplay(f"## {title}"))
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+    children.append(discord.ui.TextDisplay(description))
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
 
     return discord.ui.Container(*children, accent_colour=COLOR_PRIMARY)
 

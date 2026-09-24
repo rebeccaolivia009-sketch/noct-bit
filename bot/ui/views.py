@@ -28,6 +28,8 @@ Persistent views/items (survive restart bot):
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import discord
 
 from bot.core.logger import logger
@@ -267,25 +269,46 @@ class ShopPanelView(discord.ui.LayoutView):
     custom_id-nya tetep sama ("noctra:shop:browse") jadi ini tetep jalan
     abis bot restart -- yang dicocokin Discord buat routing klik tombol
     cuma custom_id-nya, bukan isi title/description/gambar panel (itu baked
-    di message pas awal diposting, gak perlu match persis pas restart)."""
+    di message pas awal diposting, gak perlu match persis pas restart).
+
+    Footer-nya (teks credit + jam "Terakhir update") DIBANGUN ULANG tiap
+    kali instance baru dibikin -- baik pas /settings shop_panel pertama
+    kali diposting, MAUPUN tiap 10 detik lewat bot.cogs.shop_panel_task
+    yang edit-in-place pesannya biar jamnya keliatan jalan otomatis tanpa
+    staff perlu posting ulang manual."""
 
     def __init__(
         self,
         title: str = "NOCTRA STORE",
         description: str = "Klik di bawah buat jelajahin katalog dan pesen -- gak perlu command.",
-        image_url: str | None = None,
+        banner_url: str | None = None,
         thumbnail_url: str | None = None,
         button_label: str = "Jelajahi Toko",
+        button_emoji: str | discord.PartialEmoji | None = None,
+        updated_at: datetime | None = None,
     ) -> None:
         super().__init__(timeout=None)
-        container = components.shop_panel_container(title, description, image_url, thumbnail_url)
+        container = components.shop_panel_container(title, description, banner_url)
 
         button = discord.ui.Button(
-            label=button_label[:80], style=discord.ButtonStyle.secondary, custom_id="noctra:shop:browse"
+            label=button_label[:80], style=discord.ButtonStyle.secondary,
+            custom_id="noctra:shop:browse", emoji=button_emoji,
         )
         button.callback = self.browse
-        container.add_item(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
         container.add_item(discord.ui.ActionRow(button))
+        container.add_item(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+        ts = updated_at or datetime.now(timezone.utc)
+        footer_text = discord.ui.TextDisplay(
+            "-# \u00A9 Credit by Noctra Digital Store \u2014 Category panel \u2014 update panel otomatis nya\n"
+            f"-# Terakhir update: {ts.strftime('%d %b %Y, %H:%M:%S UTC')}"
+        )
+        footer_block = (
+            discord.ui.Section(footer_text, accessory=discord.ui.Thumbnail(media=thumbnail_url))
+            if thumbnail_url else footer_text
+        )
+        container.add_item(footer_block)
+        container.add_item(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
 
         self.add_item(container)
 
