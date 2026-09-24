@@ -632,3 +632,33 @@ def invite_panel_container(
     children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
 
     return discord.ui.Container(*children, accent_colour=COLOR_PRIMARY)
+
+
+def roblox_listing_container(
+    title: str, image_url: str | None, stock_info: str, index: int, total: int
+) -> discord.ui.Container:
+    """Isi panel listing item Roblox -- tata letak PERSIS 3 bagian yang
+    diminta: judul -> pemisah -> gambar utama -> pemisah -> info stock.
+    Indikator posisi slideshow ("Gambar X dari Y") ditumpuk sebagai baris
+    kecil DI BAWAH judul (masih satu TextDisplay yang sama), bukan
+    komponen terpisah, biar strukturnya tetep 3 bagian sesuai spek.
+    Caller (bot.ui.views.RobloxListingView) nempelin ActionRow tombol
+    (Sebelumnya / Link / Selanjutnya) langsung SETELAH container ini
+    di-return."""
+    header = f"## {title}"
+    if total > 1:
+        header += f"\n-# Gambar {index + 1} dari {total}"
+
+    children: list = [discord.ui.TextDisplay(header)]
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+    if image_url:
+        children.append(discord.ui.MediaGallery(discord.MediaGalleryItem(media=image_url)))
+    else:
+        children.append(discord.ui.TextDisplay("*(belum ada gambar buat item ini)*"))
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+    children.append(discord.ui.TextDisplay(stock_info))
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+    return discord.ui.Container(*children, accent_colour=COLOR_PRIMARY)

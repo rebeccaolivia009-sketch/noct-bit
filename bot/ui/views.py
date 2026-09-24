@@ -46,6 +46,7 @@ from bot.database.queries import cards as cards_q
 from bot.database.queries import giveaways as giveaways_q
 from bot.database.queries import invites as invites_q
 from bot.database.queries import leaderboard as lb_q
+from bot.database.queries import roblox_listings as roblox_q
 from bot.database.queries import ticket_types as ticket_types_q
 from bot.ui import components, embeds
 from bot.ui.modals import MessageModal, ReasonModal, ReviewTextModal, collect_dynamic_fields
@@ -2073,3 +2074,99 @@ class InvitePanelView(discord.ui.LayoutView):
         await interaction.response.send_message(
             embed=embeds.info_embed("Aturan Main -- Invite Event", rules_text), ephemeral=True
         )
+
+
+# ============================================================================
+# PANEL LISTING ITEM ROBLOX LIMITED -- slideshow gambar (navigasi
+# Sebelumnya/Selanjutnya) + tombol link beli/trade. Tombol navigasi pake
+# dynamic item (RobloxSlideButton, custom_id encode listing_id + arah)
+# pola SAMA PERSIS kayak GiveawayJoinButton -- tetep jalan abis bot
+# restart TANPA perlu daftarin RobloxListingView lewat bot.add_view(),
+# cukup daftarin CLASS RobloxSlideButton-nya doang lewat
+# bot.add_dynamic_items() di bot.py. Tombol Link BUKAN dynamic item --
+# dia style=link (URL button), di-handle Discord sendiri di sisi client,
+# gak pernah ngirim interaction ke bot sama sekali.
+#
+# State "lagi nampilin gambar ke berapa" itu SATU per listing (bukan
+# per-viewer) -- disimpen di kolom roblox_listings.current_index, jadi
+# semua orang yang liat channel itu ngeliat gambar yang sama; siapa aja
+# yang klik Sebelumnya/Selanjutnya geser tampilan buat semua orang.
+# ============================================================================
+
+class RobloxSlideButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"noctra:roblox:slide:(?P<listing_id>[0-9]+):(?P<direction>prev|next)",
+):
+    def __init__(self, listing_id: int, direction: str) -> None:
+        is_prev = direction == "prev"
+        super().__init__(
+            discord.ui.Button(
+                label="Sebelumnya" if is_prev else "Selanjutnya",
+                style=discord.ButtonStyle.secondary,
+                emoji="\u25C0" if is_prev else "\u25B6",
+                custom_id=f"noctra:roblox:slide:{listing_id}:{direction}",
+            )
+        )
+        self.listing_id = listing_id
+        self.direction = direction
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):  # noqa: D102
+        return cls(int(match["listing_id"]), match["direction"])
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        db = interaction.client.db  # type: ignore[attr-defined]
+        listing = await roblox_q.get_listing(db, self.listing_id)
+        if listing is None:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Listing item ini udah gak ada (mungkin kehapus staff)."), ephemeral=True
+            )
+            return
+
+        images = await roblox_q.list_images(db, self.listing_id)
+        if not images:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Item ini belum ada gambar sama sekali."), ephemeral=True
+            )
+            return
+
+        current = listing["current_index"] % len(images)
+        step = 1 if self.direction == "next" else -1
+        new_index = (current + step) % len(images)  # geser muter -- abis gambar terakhir balik ke awal lagi
+        await roblox_q.set_current_index(db, self.listing_id, new_index)
+
+        view = RobloxListingView(listing, images, new_index)
+        await interaction.response.edit_message(view=view)
+
+
+class RobloxListingView(discord.ui.LayoutView):
+    """Dibangun ulang tiap kali gambar navigasi (lihat RobloxSlideButton.
+    callback) DAN tiap /roblox panel diposting -- constructor-nya nerima
+    row listing + list gambar + index langsung dari DB, bukan cuma
+    title/description kayak panel lain, biar gampang di-rebuild dari data
+    terbaru kapan aja."""
+
+    def __init__(self, listing, images: list, index: int) -> None:
+        super().__init__(timeout=None)
+        total = len(images)
+        index = index % total if total else 0
+        image_url = images[index]["image_url"] if total else None
+
+        container = components.roblox_listing_container(
+            listing["title"], image_url, listing["stock_info"], index, total
+        )
+
+        prev_button = RobloxSlideButton(listing["id"], "prev")
+        next_button = RobloxSlideButton(listing["id"], "next")
+        if total <= 1:
+            # Gak ada gunanya geser-geser kalau gambarnya cuma 0/1 --
+            # tombolnya tetep ada (biar layout konsisten) tapi dimatiin.
+            prev_button.item.disabled = True
+            next_button.item.disabled = True
+
+        link_button = discord.ui.Button(
+            label=listing["link_label"], style=discord.ButtonStyle.link, url=listing["link_url"],
+        )
+
+        container.add_item(discord.ui.ActionRow(prev_button, link_button, next_button))
+        self.add_item(container)
