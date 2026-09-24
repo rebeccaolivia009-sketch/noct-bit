@@ -7,6 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.database.queries import settings as settings_q
+from bot.database.queries import shop_panel as shop_panel_q
 from bot.ui import embeds
 from bot.ui.views import CardPanelView, ShopPanelView
 from bot.utils import activity_log
@@ -14,6 +15,24 @@ from bot.utils.helpers import RuntimeSettings
 from bot.utils.leaderboard import refresh_leaderboard
 from bot.utils.permissions import staff_only
 from bot.utils.validators import is_valid_emoji
+
+
+def _parse_custom_emoji(value: str | None) -> discord.PartialEmoji | None:
+    """Validasi emoji tombol panel toko -- terima emoji custom SERVER MANA
+    PUN (format <:nama:id> / <a:nama:id>) ATAU emoji unicode biasa. Return
+    None kalau kosong (tombolnya gak pake emoji). Raise ValueError kalau
+    formatnya gak kebaca sama sekali. Pola sama persis kayak helper di
+    bot.cogs.badge / bot.cogs.invite_tracker."""
+    if not value or not value.strip():
+        return None
+    value = value.strip()
+    try:
+        return discord.PartialEmoji.from_str(value)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(
+            f"Format emoji `{value}` gak kebaca. Pake emoji unicode biasa, atau emoji custom "
+            "server (ketik `\\:namaemoji:` di chat dulu buat dapet kode aslinya, terus tempel di sini)."
+        ) from exc
 
 
 class SettingsCog(commands.Cog):
@@ -56,9 +75,10 @@ class SettingsCog(commands.Cog):
     @app_commands.describe(
         title="Judul panel",
         description="Isi teks panel",
-        image_url="Gambar banner full-width di bawah teks (PNG/JPG/WebP)",
-        thumbnail_url="Logo/thumbnail kecil di kanan atas (PNG/JPG/WebP)",
+        banner_url="Gambar banner full-width PALING ATAS panel (PNG/JPG/WebP)",
+        thumbnail_url="Logo/thumbnail kecil di footer, pojok kanan bawah (PNG/JPG/WebP)",
         button_label="Teks yang muncul di tombol",
+        emoji="Emoji tombol -- boleh emoji custom server (opsional)",
     )
     @staff_only()
     async def shop_panel(
@@ -66,15 +86,31 @@ class SettingsCog(commands.Cog):
         interaction: discord.Interaction,
         title: str = "NOCTRA STORE",
         description: str = "Klik di bawah buat jelajahin katalog dan pesen -- gak perlu command.",
-        image_url: str | None = None,
+        banner_url: str | None = None,
         thumbnail_url: str | None = None,
         button_label: str = "Jelajahi Toko",
+        emoji: str | None = None,
     ) -> None:
+        try:
+            parsed_emoji = _parse_custom_emoji(emoji)
+        except ValueError as exc:
+            await interaction.response.send_message(embed=embeds.error_embed(str(exc)), ephemeral=True)
+            return
+
         view = ShopPanelView(
-            title=title, description=description, image_url=image_url,
-            thumbnail_url=thumbnail_url, button_label=button_label,
+            title=title, description=description, banner_url=banner_url,
+            thumbnail_url=thumbnail_url, button_label=button_label, button_emoji=parsed_emoji,
         )
-        await interaction.channel.send(view=view)
+        msg = await interaction.channel.send(view=view)
+
+        # Disimpen biar bot.cogs.shop_panel_task bisa nge-refresh footer
+        # "Terakhir update" pesan ini tiap 10 detik -- termasuk abis bot
+        # restart, soalnya state-nya di DB bukan di memori.
+        await shop_panel_q.set_state(
+            self.bot.db, interaction.guild_id, interaction.channel_id, msg.id,
+            title, description, banner_url, thumbnail_url, button_label,
+            str(parsed_emoji) if parsed_emoji else None,
+        )
         await interaction.response.send_message(embed=embeds.success_embed("Panel toko udah diposting."), ephemeral=True)
 
     @settings_group.command(
