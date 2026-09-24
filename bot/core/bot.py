@@ -37,6 +37,7 @@ EXTENSIONS = (
     "bot.cogs.shipment",
     "bot.cogs.badge",
     "bot.cogs.invite_tracker",
+    "bot.cogs.roblox_listing",
 )
 
 
@@ -162,12 +163,13 @@ class NoctraBot(commands.Bot):
             ReviewStartButton,
             CardRequestActionButton,
             GiveawayJoinButton,
+            RobloxSlideButton,
         )
         from bot.ui.panel_reply_button import PanelReplyButton
 
         self.add_dynamic_items(
             OrderActionButton, ReviewStartButton, ReplyButton, PanelReplyButton,
-            CardRequestActionButton, GiveawayJoinButton,
+            CardRequestActionButton, GiveawayJoinButton, RobloxSlideButton,
         )
         logger.info("Dynamic items registered.")
 
