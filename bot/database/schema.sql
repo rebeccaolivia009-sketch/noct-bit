@@ -339,3 +339,32 @@ CREATE TABLE IF NOT EXISTS invite_members (
     active      INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (guild_id, member_id)
 );
+
+-- Listing item Roblox limited -- panel slideshow (navigasi gambar
+-- Sebelumnya/Selanjutnya + tombol link beli/trade). Gambar-gambarnya
+-- staff upload sendiri satu-satu lewat /roblox image add (BUKAN
+-- di-generate bot), makanya kepisah ke tabel sendiri (satu listing bisa
+-- punya banyak gambar). current_index nyimpen gambar mana yang lagi
+-- ditampilin di panel -- SATU state per listing yang keliatan sama buat
+-- SEMUA orang yang liat channel-nya (bukan per-viewer), lihat
+-- bot.ui.views.RobloxSlideButton.
+CREATE TABLE IF NOT EXISTS roblox_listings (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id      INTEGER NOT NULL,
+    title         TEXT NOT NULL,
+    stock_info    TEXT NOT NULL,
+    link_label    TEXT NOT NULL DEFAULT 'Beli Sekarang',
+    link_url      TEXT NOT NULL,
+    current_index INTEGER NOT NULL DEFAULT 0,
+    channel_id    INTEGER,
+    message_id    INTEGER,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS roblox_listing_images (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    listing_id  INTEGER NOT NULL REFERENCES roblox_listings(id) ON DELETE CASCADE,
+    image_url   TEXT NOT NULL,
+    position    INTEGER NOT NULL DEFAULT 0
+);
