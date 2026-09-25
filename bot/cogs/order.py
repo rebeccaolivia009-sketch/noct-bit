@@ -138,7 +138,9 @@ class OrderCog(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
         embed = embeds.info_embed(f"Pesan soal Order #{order}", message)
-        sent = await order_actions.send_message_to_customer(self.bot, existing["user_id"], embed, order)
+        sent = await order_actions.send_message_to_customer(
+            self.bot, existing["user_id"], embed, order, actor=interaction.user
+        )
         await interaction.followup.send(
             embed=embeds.success_embed("Pesan udah dikirim.")
             if sent
