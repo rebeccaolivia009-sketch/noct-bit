@@ -28,6 +28,7 @@ EXTENSIONS = (
     "bot.cogs.panel",
     "bot.cogs.announcement",
     "bot.cogs.store_status",
+    "bot.cogs.store_status_task",
     "bot.cogs.card",
     "bot.cogs.advertisement",
     "bot.cogs.welcome",
