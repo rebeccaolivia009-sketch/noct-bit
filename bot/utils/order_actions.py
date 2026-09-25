@@ -10,6 +10,8 @@ peduli staff pake cara yang mana buat update order.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import discord
 
 from bot.core.logger import logger
@@ -20,8 +22,17 @@ from bot.database.queries import payments as payments_q
 from bot.database.queries import products as products_q
 from bot.database.queries import reviews as reviews_q
 from bot.ui import components, embeds
-from bot.utils import activity_log
+from bot.utils import activity_log, order_chat
 from bot.utils.helpers import RuntimeSettings, format_price, is_video_url
+
+
+def _display_name(actor: discord.abc.User | None) -> str | None:
+    """Nama staff yang enak dibaca customer/staff lain -- pake nickname
+    server kalau ada (display_name), fallback ke username biasa. None
+    kalau emang gak ada actor (misal dipanggil sistem tanpa staff)."""
+    if actor is None:
+        return None
+    return getattr(actor, "display_name", None) or str(actor)
 
 
 async def _notify_customer(
@@ -60,81 +71,92 @@ async def _notify_customer(
 
 
 async def send_message_to_customer(
-    bot, user_id: int, embed: discord.Embed, order_id: int | None = None
+    bot, user_id: int, embed: discord.Embed, order_id: int | None = None,
+    actor: discord.abc.User | None = None,
 ) -> bool:
     """Wrapper publik buat staff kirim DM ke customer (dipakai /order message
     dan tombol Reply di order-log). Ke-track buat dibersihin belakangan
-    kalau `order_id` diisi, sama kayak pesan checkout lainnya."""
-    return await _notify_customer(bot, user_id, embed, order_id=order_id, track=True)
+    kalau `order_id` diisi, sama kayak pesan checkout lainnya.
+
+    Kalau `actor` diisi: embed-nya dikasih footer nama staff yang bales
+    (biar CUSTOMER tau siapa yang nanganin dia), DAN baris balasannya
+    ikut ditambahin ke panel chat order ini di channel order-log (lihat
+    bot.utils.order_chat) -- biar STAFF LAIN di channel itu juga tau
+    siapa yang udah bales apa, gak cuma yang klik doang."""
+    actor_display = _display_name(actor)
+    if actor_display:
+        embed.set_footer(text=f"Dibales oleh staff {actor_display}")
+
+    sent = await _notify_customer(bot, user_id, embed, order_id=order_id, track=True)
+
+    if sent and order_id is not None and actor_display:
+        try:
+            line = f"**[{order_chat.now_str()}] Staff {actor_display} (balasan):** {embed.description or '*(lampiran)*'}"
+            customer = bot.get_user(user_id) or await bot.fetch_user(user_id)
+            await order_chat.append_and_refresh(bot, order_id, customer, line)
+        except Exception:  # noqa: BLE001
+            # Balesan ke customer udah KETERKIRIM (sent=True) -- gagal
+            # nge-update panel chat di sini gak boleh bikin caller nganggep
+            # balesannya gagal, jadi diem-diem doang, gak di-raise ulang.
+            logger.warning("Gagal update panel chat abis staff bales order #%s.", order_id)
+
+    return sent
 
 
 async def forward_to_staff(
     bot, order_id: int, user: discord.abc.User, content: str, attachment_urls: list[str]
 ) -> bool:
     """Neruskan DM customer (bisa teks biasa, screenshot bukti bayar,
-    ATAU video -- misal nunjukin kendala produk) ke channel order-log,
-    ditandain order ID dan customer-nya, jadi staff tau persis siapa yang
-    ngomong apa tanpa customer perlu buka ticket. Return False kalau
-    channel order-log belum diatur."""
+    ATAU video -- misal nunjukin kendala produk) ke SATU panel chat per
+    order di channel order-log (lihat bot.utils.order_chat) -- di-edit
+    in-place tiap ada pesan baru, BUKAN bikin pesan baru tiap kali, biar
+    channel order-log gak kebanjiran notif buat obrolan yang sama. Return
+    False kalau channel order-log belum diatur SAMA SEKALI (belum pernah
+    ada panel buat order ini)."""
     db = bot.db
     image_urls = [u for u in attachment_urls if not is_video_url(u)]
     video_urls = [u for u in attachment_urls if is_video_url(u)]
 
     if image_urls:
-        # Disimpen ke order duluan, LEPAS dari channel order-log udah
-        # diatur apa belum -- ini yang dipake belakangan pas order
-        # completed buat notif "Testi Money" (lihat mark_completed),
-        # independen dari forward ke staff di bawah berhasil apa enggak.
-        # SENGAJA cuma gambar -- Testi Money itu representasi bukti
-        # transfer, video gak relevan buat itu meskipun boleh dikirim
-        # customer buat obrolan biasa sama staff.
-        await orders_q.set_payment_proof_url(db, order_id, image_urls[0])
+        # Cuma gambar PERTAMA yang PERNAH dikirim customer buat order ini
+        # yang disimpen sebagai bukti bayar -- dicek dulu order-nya udah
+        # punya proof apa belum SEBELUM nimpa. Ini yang dipake belakangan
+        # buat notif "Testi Money" pas order completed (lihat
+        # mark_completed). SEBELUMNYA baris ini jalan tiap ada gambar
+        # baru masuk tanpa dicek dulu, jadi kalau customer kirim bukti
+        # transfer LALU kirim gambar lain (obrolan biasa), Testi Money
+        # malah ngambil gambar TERAKHIR, bukan bukti transfernya.
+        order = await orders_q.get_order(db, order_id)
+        if order and not order["payment_proof_url"]:
+            await orders_q.set_payment_proof_url(db, order_id, image_urls[0])
 
-    runtime = RuntimeSettings(db)
-    log_channel_id = await runtime.order_log_channel_id()
-    if not log_channel_id:
-        return False
-    channel = bot.get_channel(log_channel_id)
-    if not isinstance(channel, discord.TextChannel):
-        return False
+    text = content if content else "*(lampiran, gak ada teks)*"
+    line = f"**[{order_chat.now_str()}] {user.display_name}:** {text}"
+    if len(image_urls) > 1:
+        line += f"\n-# (+{len(image_urls) - 1} gambar lain di pesan yang sama)"
 
-    embed = embeds.info_embed(
-        f"Pesan dari Customer -- Order #{order_id}",
-        content if content else "*(gak ada teks -- lihat lampiran)*",
+    ok = await order_chat.append_and_refresh(
+        bot, order_id, user, line, image_url=image_urls[0] if image_urls else None
     )
-    embed.add_field(name="Customer", value=f"<@{user.id}> ({user})", inline=False)
-    if image_urls:
-        # embed.set_image() CUMA nerima gambar -- video di slot ini bakal
-        # gagal render, makanya dipisah dari video_urls dari awal.
-        embed.set_image(url=image_urls[0])
-        extra_images = image_urls[1:]
-        if extra_images:
-            embed.add_field(name="Lampiran Lainnya", value="\n".join(extra_images), inline=False)
 
-    # Import ditunda: bot.ui.views ngimport module ini di level atas (buat
-    # OrderActionButton/ReplyButton), jadi kalau di-import balik di sini di
-    # level module bakal circular. Pas fungsi ini beneran jalan, views udah
-    # ke-load penuh, jadi import lazy ini aman.
-    from bot.ui.views import ReplyButton
+    # Video tetep dikirim sebagai pesan TERPISAH (content polos, bukan
+    # embed.set_image() yang gak bisa nerima video) -- Discord otomatis
+    # nge-render player video-nya sendiri dari link mentah kayak gini,
+    # staff tinggal klik play langsung di channel. Ini SENGAJA di luar
+    # panel chat yang di-edit, soalnya videonya sendiri butuh pesannya
+    # sendiri buat bisa diputer.
+    if video_urls:
+        runtime = RuntimeSettings(db)
+        log_channel_id = await runtime.order_log_channel_id()
+        channel = bot.get_channel(log_channel_id) if log_channel_id else None
+        if isinstance(channel, discord.TextChannel):
+            for video_url in video_urls:
+                try:
+                    await channel.send(content=f"Video dari Order #{order_id} -- {user}:\n{video_url}")
+                except discord.HTTPException:
+                    logger.warning("Gagal forward video customer buat order #%s.", order_id)
 
-    view = discord.ui.View(timeout=None)
-    view.add_item(ReplyButton(order_id))
-
-    try:
-        await channel.send(embed=embed, view=view)
-        # Video dikirim sebagai pesan TERPISAH (content polos, bukan
-        # embed.set_image() yang gak bisa nerima video) -- Discord
-        # otomatis nge-render player video-nya sendiri dari link mentah
-        # kayak gini, staff tinggal klik play langsung di channel.
-        for video_url in video_urls:
-            try:
-                await channel.send(content=video_url)
-            except discord.HTTPException:
-                logger.warning("Gagal forward video customer buat order #%s.", order_id)
-        return True
-    except discord.HTTPException:
-        logger.exception("Gagal forward pesan customer buat order #%s.", order_id)
-        return False
+    return ok
 
 
 async def cleanup_dm_messages(bot, order_id: int) -> None:
@@ -257,12 +279,14 @@ async def mark_paid(bot, order_id: int, actor: discord.abc.User | None = None) -
     if order["status"] == "pending":
         await orders_q.set_order_status(db, order_id, "processing")
 
+    actor_display = _display_name(actor)
+    approval_text = f"Order kamu #{order_id} udah **disetujui** oleh staff **{actor_display}** dan lagi diproses." \
+        if actor_display else f"Order kamu #{order_id} udah ditandain **lunas** dan lagi diproses."
+
     await _notify_customer(
         bot,
         order["user_id"],
-        embeds.success_embed(
-            f"Order kamu #{order_id} udah ditandain **lunas** dan lagi diproses."
-        ),
+        embeds.success_embed(approval_text),
         order_id=order_id,
         track=True,
     )
