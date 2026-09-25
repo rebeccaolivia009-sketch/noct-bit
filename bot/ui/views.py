@@ -300,7 +300,7 @@ class ShopPanelView(discord.ui.LayoutView):
 
         ts = updated_at or datetime.now(timezone.utc)
         footer_text = discord.ui.TextDisplay(
-            "-# \u00A9 Credit by Noctra Digital Store \u2014 Category panel \u2014 Find your game in here\n"
+            "-# \u00A9 Credit by Noctra Digital Store \u2014 Category panel \u2014 category product\n"
             f"-# Terakhir update: {ts.strftime('%d %b %Y, %H:%M:%S UTC')}"
         )
         footer_block = (
@@ -1037,7 +1037,9 @@ class ReplyButton(
                 await inter.response.send_message(embed=embeds.error_embed("Order gak ketemu."), ephemeral=True)
                 return
             embed = embeds.info_embed(f"Pesan soal Order #{order_id}", text)
-            sent = await order_actions.send_message_to_customer(inter.client, order["user_id"], embed, order_id)
+            sent = await order_actions.send_message_to_customer(
+                inter.client, order["user_id"], embed, order_id, actor=inter.user
+            )
             await inter.response.send_message(
                 embed=embeds.success_embed("Pesan udah dikirim.")
                 if sent
