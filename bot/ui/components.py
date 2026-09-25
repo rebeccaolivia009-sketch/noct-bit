@@ -28,7 +28,7 @@ from datetime import datetime
 import discord
 
 from bot.core.emojis import EMOJI_SUCCESS
-from bot.core.theme import COLOR_ACCENT, COLOR_PRIMARY, COLOR_SUCCESS, FOOTER_TEXT, MARK_DASH, star_rating
+from bot.core.theme import COLOR_ACCENT, COLOR_DANGER, COLOR_PRIMARY, COLOR_SUCCESS, FOOTER_TEXT, MARK_DASH, star_rating
 from bot.utils.helpers import calculate_final_price, discount_label, format_price
 
 
@@ -668,3 +668,56 @@ def roblox_catalog_container(
     children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
 
     return discord.ui.Container(*children, accent_colour=COLOR_PRIMARY)
+
+
+def store_status_container(
+    state: str,
+    open_time: str,
+    close_time: str,
+    emoji_open: str,
+    emoji_closed: str,
+    note: str | None,
+    banner_url: str | None,
+    thumbnail_url: str | None,
+) -> discord.ui.Container:
+    """Isi panel status toko (/storestatus) -- tata letak PERSIS 4 bagian
+    yang diminta: banner -> pemisah -> judul -> pemisah -> jam operasional
+    -> pemisah -> status+indikator -> pemisah -> footer (teks credit,
+    thumbnail nempel sejajar lewat Section accessory kayak
+    shop_panel_container). `state` di-hitung OTOMATIS dari jam operasional
+    (lihat bot.utils.store_status.compute_state), builder ini cuma
+    nge-render hasilnya -- gak ada logic jam sama sekali di sini."""
+    is_open = state == "open"
+    children: list = []
+
+    if banner_url:
+        children.append(discord.ui.MediaGallery(discord.MediaGalleryItem(media=banner_url)))
+        children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+    children.append(discord.ui.TextDisplay("## Status Toko"))
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+    children.append(
+        discord.ui.TextDisplay(f"**Jam Operasional**\n{open_time} \u2013 {close_time} WIB")
+    )
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+    status_emoji = emoji_open if is_open else emoji_closed
+    status_label = "BUKA" if is_open else "TUTUP"
+    status_text = f"## {status_emoji} {status_label}"
+    if note:
+        status_text += f"\n{note}"
+    children.append(discord.ui.TextDisplay(status_text))
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+    footer_text = discord.ui.TextDisplay(
+        "-# Ini adalah jam operasional Noctra Store \u2014 Jika memesan produk di jam tutup "
+        "maka akan di proses besok nya"
+    )
+    footer_block = (
+        discord.ui.Section(footer_text, accessory=discord.ui.Thumbnail(media=thumbnail_url))
+        if thumbnail_url else footer_text
+    )
+    children.append(footer_block)
+
+    return discord.ui.Container(*children, accent_colour=COLOR_SUCCESS if is_open else COLOR_DANGER)
