@@ -390,3 +390,19 @@ CREATE TABLE IF NOT EXISTS shop_panel_state (
     button_emoji  TEXT,
     updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Panel chat per-order di channel order-log -- SATU pesan per order yang
+-- di-EDIT (bukan bikin pesan baru) tiap ada balesan customer ATAU staff,
+-- biar channel order-log gak kebanjiran notif baru buat obrolan yang
+-- sama. `transcript` nyimpen histori teksnya (dipotong dari DEPAN kalau
+-- kepanjangan, lihat bot.utils.order_chat), `latest_image_url` nyimpen
+-- gambar TERBARU yang keliatan di panel (BEDA dari
+-- orders.payment_proof_url yang sengaja cuma nyimpen gambar PERTAMA).
+CREATE TABLE IF NOT EXISTS order_chat_panels (
+    order_id         INTEGER PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
+    channel_id       INTEGER NOT NULL,
+    message_id       INTEGER NOT NULL,
+    transcript       TEXT NOT NULL DEFAULT '',
+    latest_image_url TEXT,
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
