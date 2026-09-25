@@ -346,16 +346,44 @@ class RuntimeSettings:
         return int(value) if value else None
 
     async def store_status_state(self) -> str:
-        """State toko sekarang: 'open' atau 'closed'. Default 'closed'
-        sampe staff toggle manual lewat /storestatus open|close -- gak ada
-        jadwal otomatis, semuanya manual."""
+        """State toko sekarang: 'open' atau 'closed'. OTOMATIS dihitung
+        dari store_status_open_time/close_time tiap ada perubahan
+        pengaturan ATAU tiap loop bot.cogs.store_status_task jalan (lihat
+        bot.utils.store_status.compute_state) -- nilai ini CUMA cache
+        hasil hitungan terakhir buat ditampilin cepat (misal di
+        /storestatus view), BUKAN sumber kebenaran yang staff atur
+        manual. Default 'closed' kalau belum pernah dihitung sama sekali."""
         value = await self._get("store_status_state", "closed")
         return str(value) if value in ("open", "closed") else "closed"
 
+    async def store_status_open_time(self) -> str:
+        """Jam buka toko, format 24 jam "HH:MM" di timezone WIB
+        (Asia/Jakarta) -- diatur lewat /storestatus jam_operasional.
+        Dipake bot.utils.store_status buat ngitung otomatis toko lagi
+        buka apa enggak, staff GAK toggle manual lagi."""
+        return str(await self._get("store_status_open_time", "09:00"))
+
+    async def store_status_close_time(self) -> str:
+        """Jam tutup toko, format 24 jam "HH:MM" di timezone WIB
+        (Asia/Jakarta) -- diatur lewat /storestatus jam_operasional. Boleh
+        lebih kecil dari jam buka (misal buka 09:00 tutup 02:00) buat
+        jam operasional yang ngelewatin tengah malam -- lihat
+        bot.utils.store_status.compute_state buat cara hitungnya."""
+        return str(await self._get("store_status_close_time", "22:00"))
+
+    async def store_status_banner_url(self) -> str | None:
+        """URL gambar banner full-width paling atas panel status toko --
+        diatur lewat /storestatus banner. HARUS URL yang udah di-hosting
+        (bukan upload attachment), sama alasannya kayak thumbnail di
+        bawah -- pesan ini diedit berkali-kali otomatis."""
+        value = await self._get("store_status_banner_url", None)
+        return value or None
+
     async def store_status_note(self) -> str | None:
-        """Catetan opsional yang nempel di bawah status (misal 'balik lagi
-        jam 9 pagi WIB') -- diisi tiap kali /storestatus open|close dipanggil,
-        kosong kalau staff gak ngisi parameter catatan."""
+        """Catetan opsional yang nempel di bawah status (misal pengumuman
+        libur) -- diatur lewat /storestatus note, kosong kalau staff gak
+        pernah ngisi. TERPISAH dari jam operasional -- gak ikut ke-reset
+        otomatis pas state berubah dari jam."""
         return await self._get("store_status_note", None)
 
     async def store_status_emoji_open(self) -> str:
@@ -377,6 +405,14 @@ class RuntimeSettings:
         staff toggle, sama alasannya kayak welcome_banner_url."""
         value = await self._get("store_status_thumbnail_url", None)
         return value or None
+
+    async def store_status_ping_role_id(self) -> int | None:
+        """Role yang di-ping lewat PESAN TERPISAH (bukan edit panel --
+        edit pesan gak ngirim notifikasi apapun) tiap toko BENERAN pindah
+        status buka<->tutup -- diatur lewat /storestatus role. None kalau
+        belum diatur (gak ada ping sama sekali, cuma panel yang ke-update)."""
+        value = await self._get("store_status_ping_role_id", None)
+        return int(value) if value else None
 
     # -- Kartu digital (/card, /settings card_*) --------------------------------
 
