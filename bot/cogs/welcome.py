@@ -40,6 +40,7 @@ from discord.ext import commands
 
 from bot.core.logger import logger
 from bot.core.theme import COLOR_ACCENT
+from bot.database.queries import categories as categories_q
 from bot.database.queries import settings as settings_q
 from bot.ui import components, embeds
 from bot.utils.helpers import RuntimeSettings, guild_scoped_key
@@ -163,6 +164,9 @@ class WelcomeCog(commands.Cog):
     joinrole_group = app_commands.Group(
         name="joinrole", description="Atur role otomatis pas ada yang gabung.", guild_only=True
     )
+    welcomedm_group = app_commands.Group(
+        name="welcomedm", description="Atur DM sambutan (katalog kategori produk) ke member baru.", guild_only=True
+    )
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -173,6 +177,7 @@ class WelcomeCog(commands.Cog):
     async def on_member_join(self, member: discord.Member) -> None:
         await self._assign_join_roles(member)
         await self._post_welcome_message(member)
+        await self._send_welcome_dm(member)
 
     async def _assign_join_roles(self, member: discord.Member) -> None:
         runtime = RuntimeSettings(self.bot.db)
@@ -208,6 +213,39 @@ class WelcomeCog(commands.Cog):
         if not isinstance(channel, discord.TextChannel):
             return
         await self._send_welcome(member, channel)
+
+    async def _send_welcome_dm(self, member: discord.Member) -> None:
+        """DM PRIBADI ke member yang baru gabung -- TERPISAH dari pesan
+        sambutan di channel (_post_welcome_message di atas). Isinya
+        katalog kategori produk yang lagi aktif (LIVE dari /category,
+        jadi otomatis update tiap staff nambah/ubah kategori, gak perlu
+        disinkronin manual). Bot gak bisa DM member yang nutup DM-nya
+        dari server ini -- itu diem-diem doang (discord.Forbidden), BUKAN
+        error yang perlu diributin."""
+        if member.bot:
+            return
+        runtime = RuntimeSettings(self.bot.db)
+        guild_id = member.guild.id
+        if not await runtime.welcome_dm_enabled(guild_id):
+            return
+
+        categories = await categories_q.list_categories(self.bot.db, enabled_only=True)
+        banner_url = await runtime.welcome_dm_banner_url(guild_id)
+        button_label = await runtime.welcome_dm_button_label(guild_id)
+        button_url = await runtime.welcome_dm_button_url(guild_id)
+
+        container = components.welcome_dm_container(categories, banner_url)
+        if button_url:
+            button = discord.ui.Button(label=button_label[:80], style=discord.ButtonStyle.link, url=button_url)
+            container.add_item(discord.ui.ActionRow(button))
+
+        view = components.NoctraLayout(container, timeout=None)
+        try:
+            await member.send(view=view)
+        except discord.Forbidden:
+            logger.info("Gak bisa kirim welcome DM ke %s -- DM-nya lagi ditutup.", member)
+        except discord.HTTPException:
+            logger.exception("Gagal kirim welcome DM ke %s.", member)
 
     async def _build_container_for(self, member: discord.Member) -> discord.ui.Container:
         runtime = RuntimeSettings(self.bot.db)
@@ -423,6 +461,78 @@ class WelcomeCog(commands.Cog):
         await interaction.response.send_message(
             embed=embeds.info_embed("Placeholder Pesan Sambutan", "\n".join(lines)), ephemeral=True
         )
+
+    # -- Command /welcomedm -------------------------------------------------------
+
+    @welcomedm_group.command(name="toggle", description="Nyalain/matiin DM sambutan (katalog kategori) ke member baru.")
+    @app_commands.describe(enabled="True buat nyalain, False buat matiin")
+    @staff_only()
+    async def welcomedm_toggle(self, interaction: discord.Interaction, enabled: bool) -> None:
+        await settings_q.set_setting(
+            self.bot.db, guild_scoped_key("welcome_dm_enabled", interaction.guild_id), "1" if enabled else "0"
+        )
+        state = "dinyalain" if enabled else "dimatiin"
+        await interaction.response.send_message(
+            embed=embeds.success_embed(f"DM sambutan member baru udah {state}."), ephemeral=True
+        )
+
+    @welcomedm_group.command(name="banner", description="Atur/hapus gambar banner full-width paling atas DM sambutan.")
+    @app_commands.describe(image_url="URL gambar banner (PNG/JPG/WebP) -- kosongin buat hapus banner")
+    @staff_only()
+    async def welcomedm_banner(self, interaction: discord.Interaction, image_url: str | None = None) -> None:
+        await settings_q.set_setting(
+            self.bot.db, guild_scoped_key("welcome_dm_banner_url", interaction.guild_id), image_url or ""
+        )
+        message = "Banner DM sambutan udah diatur." if image_url else "Banner DM sambutan udah dihapus."
+        await interaction.response.send_message(embed=embeds.success_embed(message), ephemeral=True)
+
+    @welcomedm_group.command(name="button", description="Atur tombol link di DM sambutan (misal ke channel toko).")
+    @app_commands.describe(
+        label="Teks tombol (default 'Kunjungi Toko')",
+        url="URL tombol -- kosongin buat SEMBUNYIIN tombolnya sama sekali",
+    )
+    @staff_only()
+    async def welcomedm_button(
+        self, interaction: discord.Interaction, url: str | None = None, label: str = "Kunjungi Toko"
+    ) -> None:
+        guild_id = interaction.guild_id
+        await settings_q.set_setting(self.bot.db, guild_scoped_key("welcome_dm_button_url", guild_id), url or "")
+        await settings_q.set_setting(self.bot.db, guild_scoped_key("welcome_dm_button_label", guild_id), label)
+        message = f"Tombol DM sambutan diatur: **{label}** -> {url}" if url else "Tombol DM sambutan disembunyiin (URL dikosongin)."
+        await interaction.response.send_message(embed=embeds.success_embed(message), ephemeral=True)
+
+    @welcomedm_group.command(name="test", description="Kirim contoh DM sambutan ke DM kamu sendiri.")
+    @staff_only()
+    async def welcomedm_test(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Command ini cuma bisa dipake di dalem server."), ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        runtime = RuntimeSettings(self.bot.db)
+        guild_id = interaction.guild_id
+        categories = await categories_q.list_categories(self.bot.db, enabled_only=True)
+        banner_url = await runtime.welcome_dm_banner_url(guild_id)
+        button_label = await runtime.welcome_dm_button_label(guild_id)
+        button_url = await runtime.welcome_dm_button_url(guild_id)
+
+        container = components.welcome_dm_container(categories, banner_url)
+        if button_url:
+            button = discord.ui.Button(label=button_label[:80], style=discord.ButtonStyle.link, url=button_url)
+            container.add_item(discord.ui.ActionRow(button))
+        view = components.NoctraLayout(container, timeout=None)
+
+        try:
+            await interaction.user.send(view=view)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                embed=embeds.error_embed("Gak bisa DM kamu -- cek pengaturan privasi DM kamu di server ini."),
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(embed=embeds.success_embed("Contoh DM sambutan udah dikirim ke DM kamu."), ephemeral=True)
 
     # -- Command /joinrole ------------------------------------------------------
 
