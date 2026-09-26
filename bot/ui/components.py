@@ -679,14 +679,23 @@ def store_status_container(
     note: str | None,
     banner_url: str | None,
     thumbnail_url: str | None,
+    ping_role_id: int | None = None,
 ) -> discord.ui.Container:
     """Isi panel status toko (/storestatus) -- tata letak PERSIS 4 bagian
     yang diminta: banner -> pemisah -> judul -> pemisah -> jam operasional
-    -> pemisah -> status+indikator -> pemisah -> footer (teks credit,
-    thumbnail nempel sejajar lewat Section accessory kayak
-    shop_panel_container). `state` di-hitung OTOMATIS dari jam operasional
-    (lihat bot.utils.store_status.compute_state), builder ini cuma
-    nge-render hasilnya -- gak ada logic jam sama sekali di sini."""
+    (+ role notifikasi, SEJAJAR di blok teks yang sama) -> pemisah ->
+    status+indikator -> pemisah -> footer (teks credit, thumbnail nempel
+    sejajar lewat Section accessory kayak shop_panel_container). `state`
+    di-hitung OTOMATIS dari jam operasional (lihat
+    bot.utils.store_status.compute_state), builder ini cuma nge-render
+    hasilnya -- gak ada logic jam sama sekali di sini.
+
+    CATATAN soal `ping_role_id`: nampilin mention role di sini CUMA buat
+    INFO VISUAL -- Discord GAK ngirim notifikasi ping dari mention yang
+    nongol lewat EDIT pesan (cuma pesan BARU yang beneran nge-ping).
+    Notifikasi asli tetep dikirim terpisah lewat
+    bot.utils.store_status.notify_state_ping tiap status BENERAN
+    berubah."""
     is_open = state == "open"
     children: list = []
 
@@ -697,9 +706,10 @@ def store_status_container(
     children.append(discord.ui.TextDisplay("## Status Toko"))
     children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
 
-    children.append(
-        discord.ui.TextDisplay(f"**Jam Operasional**\n{open_time} \u2013 {close_time} WIB")
-    )
+    jam_text = f"**Jam Operasional**\n{open_time} \u2013 {close_time} WIB"
+    if ping_role_id:
+        jam_text += f"\n-# \U0001F514 Notifikasi buka/tutup: <@&{ping_role_id}>"
+    children.append(discord.ui.TextDisplay(jam_text))
     children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
 
     status_emoji = emoji_open if is_open else emoji_closed
@@ -721,3 +731,46 @@ def store_status_container(
     children.append(footer_block)
 
     return discord.ui.Container(*children, accent_colour=COLOR_SUCCESS if is_open else COLOR_DANGER)
+
+
+def welcome_dm_container(categories: list, banner_url: str | None) -> discord.ui.Container:
+    """Isi DM sambutan member baru (/welcomedm) -- tata letak PERSIS yang
+    diminta: banner -> pemisah -> judul "NOCTRA DIGITAL STORE" -> pemisah
+    -> daftar kategori produk (nama+emoji, LIVE dari /category yang
+    staff atur -- BUKAN hardcode, jadi otomatis nyambung tiap kategori
+    ditambah/diubah) -> pemisah -> footer -> pemisah. Tombol link
+    ditempel caller SETELAH container ini di-return (lihat
+    bot.cogs.welcome._send_welcome_dm), sesuai urutan yang diminta:
+    footer duluan, tombol paling akhir."""
+    children: list = []
+
+    if banner_url:
+        children.append(discord.ui.MediaGallery(discord.MediaGalleryItem(media=banner_url)))
+        children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+    children.append(discord.ui.TextDisplay("## NOCTRA DIGITAL STORE"))
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+    if categories:
+        entries = []
+        for cat in categories:
+            emoji = cat["emoji"] or "\U0001F4E6"
+            entry = f"{emoji} **{cat['name']}**"
+            if cat["description"]:
+                entry += f"\n-# {cat['description']}"
+            entries.append(entry)
+        category_text = "\n\n".join(entries)
+    else:
+        category_text = "*(belum ada kategori produk yang aktif)*"
+    children.append(discord.ui.TextDisplay(f"**Kategori Produk yang Tersedia:**\n\n{category_text}"))
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+    children.append(
+        discord.ui.TextDisplay(
+            "-# Selamat datang di Noctra Digital Store, disini kamu bisa berbelanja dengan "
+            "pengalaman terbaik dan layanan yang nyaman"
+        )
+    )
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+    return discord.ui.Container(*children, accent_colour=COLOR_PRIMARY)
