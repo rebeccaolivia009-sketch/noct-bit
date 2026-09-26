@@ -774,3 +774,33 @@ def welcome_dm_container(categories: list, banner_url: str | None) -> discord.ui
     children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
 
     return discord.ui.Container(*children, accent_colour=COLOR_PRIMARY)
+
+
+def rstock_container(
+    emoji_title: str,
+    emoji_via_username: str, info_via_username: str,
+    emoji_via_login: str, info_via_login: str,
+    emoji_gamepass: str, info_gamepass: str,
+    emoji_footer: str,
+) -> discord.ui.Container:
+    """Isi auto-respon /rstock -- trigger kata kunci "rstock" di chat
+    (lihat bot.cogs.roblox_stock). Tata letak PERSIS yang diminta: judul
+    -> pemisah -> stock ROBUX (3 tipe: via Username / via Login /
+    Gamepass) -> pemisah -> footer. SETIAP bagian WAJIB nempel emoji --
+    caller udah mastiin ada fallback emoji default kalau staff belum
+    pernah atur (lihat RuntimeSettings.rstock_emoji_*), jadi gak ada
+    parameter emoji di sini yang bakal kosong."""
+    children: list = [
+        discord.ui.TextDisplay(f"## {emoji_title} STOCK ROBUX"),
+        discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
+        discord.ui.TextDisplay(
+            f"{emoji_via_username} **Via Username**\n{info_via_username}\n\n"
+            f"{emoji_via_login} **Via Login**\n{info_via_login}\n\n"
+            f"{emoji_gamepass} **Gamepass**\n{info_gamepass}"
+        ),
+        discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
+        discord.ui.TextDisplay(
+            f"-# {emoji_footer} Stock produk ini real-time, jadi perhatikan stock sebelum memesan ROBUX"
+        ),
+    ]
+    return discord.ui.Container(*children, accent_colour=COLOR_ACCENT)
