@@ -36,7 +36,7 @@ from bot.database.queries import settings as settings_q
 from bot.ui import embeds
 from bot.utils.helpers import RuntimeSettings
 from bot.utils.permissions import staff_only
-from bot.utils.store_status import notify_state_ping, refresh_store_status
+from bot.utils.store_status import refresh_store_status
 from bot.utils.validators import is_valid_emoji
 
 NOTE_MAX_LENGTH = 200
@@ -93,48 +93,25 @@ class StoreStatusCog(commands.Cog):
             )
             return
 
-        runtime = RuntimeSettings(self.bot.db)
-        previous_state = await runtime.store_status_state()
-
         await settings_q.set_setting(self.bot.db, "store_status_open_time", open_time)
         await settings_q.set_setting(self.bot.db, "store_status_close_time", close_time)
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        ok = await refresh_store_status(self.bot)
-        if not ok:
-            await interaction.followup.send(
-                embed=embeds.error_embed(
-                    "Jam operasional udah disimpen, tapi channel-nya belum diatur (atau udah gak valid) -- "
-                    "pake `/storestatus channel` dulu biar panelnya keposting."
-                ),
-                ephemeral=True,
-            )
-            return
-
-        # Jam baru ini bisa aja LANGSUNG ngubah status toko saat ini juga
-        # (bukan cuma buat nanti) -- kalau iya, ping-nya jangan nunggu
-        # loop background 60 detik lagi, langsung aja sekarang.
-        new_state = await RuntimeSettings(self.bot.db).store_status_state()
-        if new_state != previous_state:
-            await notify_state_ping(self.bot, new_state)
-
-        await interaction.followup.send(
-            embed=embeds.success_embed(
-                f"Jam operasional diatur: **{open_time} - {close_time} WIB**. Status toko ngikutin ini otomatis."
-            ),
-            ephemeral=True,
+        await self._refresh_and_reply(
+            interaction, f"Jam operasional diatur: **{open_time} - {close_time} WIB**. Status toko ngikutin ini otomatis."
         )
 
-    @storestatus_group.command(name="role", description="Atur role yang di-ping tiap toko buka/tutup otomatis.")
-    @app_commands.describe(role="Role yang mau di-ping (kosongin buat matiin ping sama sekali)")
+    @storestatus_group.command(
+        name="role", description="Atur role yang ditampilin di panel status toko (INFO doang, BUKAN notifikasi ping)."
+    )
+    @app_commands.describe(role="Role yang mau ditampilin (kosongin buat hapus)")
     @staff_only()
     async def role(self, interaction: discord.Interaction, role: discord.Role | None = None) -> None:
         await settings_q.set_setting(self.bot.db, "store_status_ping_role_id", str(role.id) if role else "")
         message = (
-            f"Role yang di-ping tiap toko buka/tutup diatur ke {role.mention}."
-            if role else "Ping role status toko dimatiin -- panel tetep ke-update, cuma gak ada ping lagi."
+            f"Role {role.mention} bakal ditampilin di panel status toko (sejajar jam operasional) -- "
+            "cuma tampilan, gak ngirim notifikasi ping ke member."
+            if role else "Role di panel status toko dihapus."
         )
-        await interaction.response.send_message(embed=embeds.success_embed(message), ephemeral=True)
+        await self._refresh_and_reply(interaction, message)
 
     @storestatus_group.command(name="channel", description="Atur channel tempat panel status toko diposting.")
     @app_commands.describe(channel="Channel buat panel status buka/tutup")
@@ -209,7 +186,7 @@ class StoreStatusCog(commands.Cog):
             f"\u25b8 **Status sekarang:** {'BUKA' if state == 'open' else 'TUTUP'} (otomatis)",
             f"\u25b8 **Jam Operasional:** {await runtime.store_status_open_time()} - {await runtime.store_status_close_time()} WIB",
             f"\u25b8 **Channel:** {f'<#{channel_id}>' if channel_id else 'Belum diatur'}",
-            f"\u25b8 **Role Ping:** {f'<@&{await runtime.store_status_ping_role_id()}>' if await runtime.store_status_ping_role_id() else 'Gak ada'}",
+            f"\u25b8 **Role di Panel:** {f'<@&{await runtime.store_status_ping_role_id()}>' if await runtime.store_status_ping_role_id() else 'Gak ada'}",
             f"\u25b8 **Emoji Buka:** {await runtime.store_status_emoji_open()}",
             f"\u25b8 **Emoji Tutup:** {await runtime.store_status_emoji_closed()}",
             f"\u25b8 **Banner:** {'Diatur' if await runtime.store_status_banner_url() else 'Belum diatur'}",

@@ -15,7 +15,7 @@ from discord.ext import commands, tasks
 
 from bot.core.logger import logger
 from bot.utils.helpers import RuntimeSettings
-from bot.utils.store_status import compute_state, notify_state_ping, refresh_store_status
+from bot.utils.store_status import compute_state, refresh_store_status
 
 
 class StoreStatusTaskCog(commands.Cog):
@@ -35,9 +35,7 @@ class StoreStatusTaskCog(commands.Cog):
         cached_state = await runtime.store_status_state()
 
         if new_state != cached_state:
-            ok = await refresh_store_status(self.bot)
-            if ok:
-                await notify_state_ping(self.bot, new_state)
+            await refresh_store_status(self.bot)
             logger.info("Status toko otomatis berubah jadi %s (jam operasional %s-%s WIB).",
                         new_state, open_time, close_time)
 
