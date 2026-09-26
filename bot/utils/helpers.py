@@ -558,3 +558,33 @@ class RuntimeSettings:
         """Isi tombol "Aturan Main" di panel /invite -- diatur lewat
         /invite settings rules. None kalau staff belum pernah atur."""
         return await self._get("invite_rules_text", None)
+
+    # -- Auto-respon stock ROBUX (/rstock, trigger kata kunci "rstock") --------
+    # SEMUA punya default (emoji unicode + teks placeholder) -- fitur ini
+    # WAJIB selalu nampilin emoji di tiap bagian (lihat komentar di
+    # bot.cogs.roblox_stock), jadi gak boleh ada slot yang kosong sama
+    # sekali sebelum staff sempet atur.
+
+    async def rstock_emoji_title(self) -> str:
+        return str(await self._get("rstock_emoji_title", "\U0001F48E"))
+
+    async def rstock_emoji_via_username(self) -> str:
+        return str(await self._get("rstock_emoji_via_username", "\U0001F464"))
+
+    async def rstock_emoji_via_login(self) -> str:
+        return str(await self._get("rstock_emoji_via_login", "\U0001F511"))
+
+    async def rstock_emoji_gamepass(self) -> str:
+        return str(await self._get("rstock_emoji_gamepass", "\U0001F3AE"))
+
+    async def rstock_emoji_footer(self) -> str:
+        return str(await self._get("rstock_emoji_footer", "\u2139\ufe0f"))
+
+    async def rstock_info_via_username(self) -> str:
+        return str(await self._get("rstock_info_via_username", "Belum diatur staff."))
+
+    async def rstock_info_via_login(self) -> str:
+        return str(await self._get("rstock_info_via_login", "Belum diatur staff."))
+
+    async def rstock_info_gamepass(self) -> str:
+        return str(await self._get("rstock_info_gamepass", "Belum diatur staff."))

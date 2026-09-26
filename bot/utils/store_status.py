@@ -100,37 +100,3 @@ async def refresh_store_status(bot) -> bool:
     except discord.HTTPException:
         logger.exception("Gagal posting panel status toko.")
         return False
-
-
-async def notify_state_ping(bot, state: str) -> None:
-    """Kirim PESAN TERPISAH (bukan edit panel -- edit pesan gak ngirim
-    notifikasi apapun ke siapa-siapa) yang nge-ping role yang diatur
-    (/storestatus role), dikirim ke channel status toko yang sama.
-    Caller (bot.cogs.store_status_task & bot.cogs.store_status.
-    jam_operasional) yang tanggung jawab CUMA manggil ini pas state-nya
-    BENERAN beda dari sebelumnya -- fungsi ini sendiri gak ngecek itu,
-    supaya dipanggil pun diem-diem aja kalau role/channel-nya belum
-    diatur."""
-    db = bot.db
-    runtime = RuntimeSettings(db)
-    role_id = await runtime.store_status_ping_role_id()
-    if not role_id:
-        return
-    channel_id = await runtime.store_status_channel_id()
-    if not channel_id:
-        return
-    channel = bot.get_channel(channel_id)
-    if not isinstance(channel, discord.TextChannel):
-        return
-
-    is_open = state == "open"
-    emoji = await runtime.store_status_emoji_open() if is_open else await runtime.store_status_emoji_closed()
-    label = "BUKA" if is_open else "TUTUP"
-
-    try:
-        await channel.send(
-            content=f"{emoji} Toko sekarang **{label}**! <@&{role_id}>",
-            allowed_mentions=discord.AllowedMentions(roles=[discord.Object(id=role_id)]),
-        )
-    except discord.HTTPException:
-        logger.exception("Gagal kirim ping role status toko.")
