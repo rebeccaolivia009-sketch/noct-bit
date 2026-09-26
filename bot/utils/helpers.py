@@ -246,6 +246,37 @@ class RuntimeSettings:
         except ValueError:
             return None
 
+    # -- DM sambutan member baru (/welcomedm) ----------------------------------
+    # TERPISAH dari pesan sambutan CHANNEL di atas -- ini yang dikirim
+    # lewat DM PRIBADI ke member yang baru gabung, isinya katalog kategori
+    # produk (live dari /category, bukan hardcode). Judul & footer-nya
+    # SENGAJA gak dijadiin setting (fixed di bot.cogs.welcome), cuma
+    # banner & tombol link yang staff atur -- beda dari pesan sambutan
+    # channel yang semua bagiannya bisa dikustom lewat /welcome setup.
+
+    async def welcome_dm_enabled(self, guild_id: int) -> bool:
+        """Default MATI -- DM baru mulai kekirim begitu staff nyalain
+        lewat /welcomedm toggle (beda dari welcome_enabled/channel yang
+        defaultnya nyala), soalnya DM ke tombol link yang belum diisi
+        staff bakal keliatan gak lengkap/asal."""
+        value = await self._get(guild_scoped_key("welcome_dm_enabled", guild_id), "0")
+        return str(value) == "1"
+
+    async def welcome_dm_banner_url(self, guild_id: int) -> str | None:
+        value = await self._get(guild_scoped_key("welcome_dm_banner_url", guild_id), None)
+        return value or None
+
+    async def welcome_dm_button_label(self, guild_id: int) -> str:
+        value = await self._get(guild_scoped_key("welcome_dm_button_label", guild_id), "Kunjungi Toko")
+        return str(value)
+
+    async def welcome_dm_button_url(self, guild_id: int) -> str | None:
+        """URL tombol link di DM sambutan -- staff atur sendiri (misal
+        link channel toko atau invite server) lewat /welcomedm button.
+        Tombolnya gak ditampilin sama sekali kalau ini belum diisi."""
+        value = await self._get(guild_scoped_key("welcome_dm_button_url", guild_id), None)
+        return value or None
+
     # -- Notifikasi Server Boost (/boost) --------------------------------------
     # Per-guild, sama pola kayak /welcome di atas -- lihat guild_scoped_key().
 

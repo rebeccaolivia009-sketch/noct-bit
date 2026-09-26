@@ -77,6 +77,7 @@ async def refresh_store_status(bot) -> bool:
         await runtime.store_status_emoji_open(), await runtime.store_status_emoji_closed(),
         await runtime.store_status_note(),
         await runtime.store_status_banner_url(), await runtime.store_status_thumbnail_url(),
+        ping_role_id=await runtime.store_status_ping_role_id(),
     )
     view = components.NoctraLayout(container, timeout=None)
 
