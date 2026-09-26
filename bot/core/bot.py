@@ -40,6 +40,7 @@ EXTENSIONS = (
     "bot.cogs.invite_tracker",
     "bot.cogs.roblox_listing",
     "bot.cogs.shop_panel_task",
+    "bot.cogs.roblox_stock",
 )
 
 
