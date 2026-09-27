@@ -169,6 +169,24 @@ class SettingsCog(commands.Cog):
             self.bot, interaction.user, "Setting Diubah", f"Role staff diatur ke {role.mention}."
         )
 
+    @settings_group.command(
+        name="owner", description="Atur akun owner store -- balesan owner ke customer dibikin spesial (beda dari staff)."
+    )
+    @app_commands.describe(user="Akun Discord owner store (kosongin buat hapus, balik jadi gak ada yang 'spesial')")
+    @staff_only()
+    async def owner(self, interaction: discord.Interaction, user: discord.Member | None = None) -> None:
+        await settings_q.set_setting(self.bot.db, "owner_user_id", str(user.id) if user else "")
+        message = (
+            f"{user.mention} diatur sebagai owner store -- tiap dia bales customer (lewat tombol Balas atau "
+            "`/order message`) bakal kepake gaya spesial (badge \U0001F451, warna beda, footer khusus)."
+            if user else "Owner store dihapus -- semua balesan bakal dianggep balesan staff biasa lagi."
+        )
+        await interaction.response.send_message(embed=embeds.success_embed(message), ephemeral=True)
+        await activity_log.log_activity(
+            self.bot, interaction.user, "Setting Diubah",
+            f"Owner store diatur ke {user.mention}." if user else "Owner store dihapus.",
+        )
+
     @settings_group.command(name="currency", description="Atur label mata uang default buat produk baru.")
     @app_commands.describe(currency_label="contoh: USD, IDR, Robux")
     @staff_only()
