@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import discord
 
 from bot.core.logger import logger
+from bot.core.theme import COLOR_WARNING
 from bot.database.queries import cards as cards_q
 from bot.database.queries import category_types as category_types_q
 from bot.database.queries import orders as orders_q
@@ -33,6 +34,17 @@ def _display_name(actor: discord.abc.User | None) -> str | None:
     if actor is None:
         return None
     return getattr(actor, "display_name", None) or str(actor)
+
+
+async def _is_owner(db, actor: discord.abc.User | None) -> bool:
+    """True kalau `actor` itu persis akun owner yang diatur lewat
+    /settings owner -- dipake buat kasih gaya SPESIAL (beda dari staff
+    biasa) pas owner sendiri yang bales customer, lihat
+    send_message_to_customer & mark_paid."""
+    if actor is None:
+        return False
+    owner_id = await RuntimeSettings(db).owner_user_id()
+    return owner_id is not None and actor.id == owner_id
 
 
 async def _notify_customer(
@@ -82,16 +94,29 @@ async def send_message_to_customer(
     (biar CUSTOMER tau siapa yang nanganin dia), DAN baris balasannya
     ikut ditambahin ke panel chat order ini di channel order-log (lihat
     bot.utils.order_chat) -- biar STAFF LAIN di channel itu juga tau
-    siapa yang udah bales apa, gak cuma yang klik doang."""
+    siapa yang udah bales apa, gak cuma yang klik doang.
+
+    Kalau `actor`-nya PERSIS akun owner (diatur lewat /settings owner):
+    embed-nya dibikin SPESIAL -- warna beda, judul dikasih badge mahkota,
+    footer nunjukin ini balesan LANGSUNG dari owner -- biar customer
+    langsung ngerasa "wah dibales owner-nya sendiri", bukan staff biasa."""
     actor_display = _display_name(actor)
-    if actor_display:
+    is_owner = await _is_owner(bot.db, actor)
+
+    if is_owner:
+        embed.colour = COLOR_WARNING
+        if embed.title:
+            embed.title = f"\U0001F451 {embed.title}"
+        embed.set_footer(text=f"\U0001F451 Dibales LANGSUNG oleh Owner Noctra Store \u2014 {actor_display}")
+    elif actor_display:
         embed.set_footer(text=f"Dibales oleh staff {actor_display}")
 
     sent = await _notify_customer(bot, user_id, embed, order_id=order_id, track=True)
 
     if sent and order_id is not None and actor_display:
         try:
-            line = f"**[{order_chat.now_str()}] Staff {actor_display} (balasan):** {embed.description or '*(lampiran)*'}"
+            sender_label = f"\U0001F451 OWNER {actor_display}" if is_owner else f"Staff {actor_display}"
+            line = f"**[{order_chat.now_str()}] {sender_label} (balasan):** {embed.description or '*(lampiran)*'}"
             customer = bot.get_user(user_id) or await bot.fetch_user(user_id)
             await order_chat.append_and_refresh(bot, order_id, customer, line)
         except Exception:  # noqa: BLE001
@@ -280,13 +305,27 @@ async def mark_paid(bot, order_id: int, actor: discord.abc.User | None = None) -
         await orders_q.set_order_status(db, order_id, "processing")
 
     actor_display = _display_name(actor)
-    approval_text = f"Order kamu #{order_id} udah **disetujui** oleh staff **{actor_display}** dan lagi diproses." \
-        if actor_display else f"Order kamu #{order_id} udah ditandain **lunas** dan lagi diproses."
+    is_owner = await _is_owner(db, actor)
+
+    if is_owner:
+        approval_text = (
+            f"\U0001F451 Order kamu #{order_id} udah **disetujui LANGSUNG oleh Owner Noctra Store** "
+            f"({actor_display}) dan lagi diproses!"
+        )
+    elif actor_display:
+        approval_text = f"Order kamu #{order_id} udah **disetujui** oleh staff **{actor_display}** dan lagi diproses."
+    else:
+        approval_text = f"Order kamu #{order_id} udah ditandain **lunas** dan lagi diproses."
+
+    approval_embed = embeds.success_embed(approval_text)
+    if is_owner:
+        approval_embed.colour = COLOR_WARNING
+        approval_embed.set_footer(text="\U0001F451 Owner Noctra Store")
 
     await _notify_customer(
         bot,
         order["user_id"],
-        embeds.success_embed(approval_text),
+        approval_embed,
         order_id=order_id,
         track=True,
     )

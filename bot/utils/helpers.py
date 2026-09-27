@@ -99,6 +99,16 @@ class RuntimeSettings:
         value = await self._get("staff_role_id", config.staff_role_id)
         return int(value) if value else None
 
+    async def owner_user_id(self) -> int | None:
+        """ID Discord akun OWNER store -- diatur lewat /settings owner.
+        Dipake buat nunjukin balesan customer yang SPESIAL (warna beda,
+        badge mahkota, footer khusus) kalau yang bales itu owner sendiri,
+        bukan staff biasa -- lihat bot.utils.order_actions
+        (send_message_to_customer & mark_paid). None kalau belum pernah
+        diatur (semua balesan dianggep staff biasa)."""
+        value = await self._get("owner_user_id", None)
+        return int(value) if value else None
+
     async def order_log_channel_id(self) -> int | None:
         value = await self._get("order_log_channel_id", None)
         return int(value) if value else None
