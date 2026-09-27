@@ -5,8 +5,10 @@ tengah kalimat) di channel manapun, bot langsung bales panel stock (3
 tipe: via Username, via Login, Gamepass).
 
 Dua pengaman anti-spam:
-  * Auto kehapus abis 2 menit (delete_after) -- biar channel gak numpuk
-    histori panel lama tiap kali di-trigger.
+  * Auto kehapus abis 2 menit -- BUKAN cuma embed-nya, pesan trigger
+    "rstock" dari member juga ikut kehapus BARENGAN (dijadwalin pake
+    delay yang sama, bukan langsung instan), biar channel-nya beneran
+    bersih lagi abis 2 menit, gak numpuk dua-duanya.
   * Jeda 10 detik PER CHANNEL antar respon -- kalau ada yang ketik
     "rstock" lagi sebelum jeda abis, bot DIEM AJA (gak nge-panel lagi,
     gak ngasih pesan error/peringatan juga -- itu sendiri bisa jadi
@@ -94,6 +96,15 @@ class RobloxStockCog(commands.Cog):
             await message.channel.send(view=view, delete_after=AUTO_DELETE_SECONDS)
         except discord.HTTPException:
             pass
+
+        # Pesan trigger member-nya ikut kehapus, TAPI dijadwalin bareng
+        # sama embed-nya (delay, bukan langsung) -- biar orang yang lagi
+        # baca pesan "rstock" dia masih sempet liat sebelum ke-apus,
+        # bukan ilang instan pas dia kirim.
+        try:
+            await message.delete(delay=AUTO_DELETE_SECONDS)
+        except discord.HTTPException:
+            pass  # bot mungkin gak punya izin Manage Messages di channel ini -- gak masalah, cuma gak kehapus
 
     async def _build_view(self) -> discord.ui.LayoutView:
         runtime = RuntimeSettings(self.bot.db)

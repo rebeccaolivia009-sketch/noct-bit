@@ -144,6 +144,7 @@ class RobloxListingCog(commands.Cog):
         stock_info="Info stock baru (kosongin kalau gak diubah)",
         link_label="Teks tombol link baru (kosongin kalau gak diubah)",
         link_url="URL tombol link baru (kosongin kalau gak diubah)",
+        gambar="Gambar baru buat item ini (kosongin kalau gambarnya gak diubah)",
     )
     @staff_only()
     async def item_edit(
@@ -155,10 +156,18 @@ class RobloxListingCog(commands.Cog):
         stock_info: str | None = None,
         link_label: str | None = None,
         link_url: str | None = None,
+        gambar: discord.Attachment | None = None,
     ) -> None:
+        if gambar is not None and (not gambar.content_type or not gambar.content_type.startswith("image/")):
+            await interaction.response.send_message(
+                embed=embeds.error_embed("File yang diupload harus berupa gambar."), ephemeral=True
+            )
+            return
+
         ok = await roblox_q.update_item_at(
             self.bot.db, catalog_id, nomor - 1,
             item_title=item_title, stock_info=stock_info, link_label=link_label, link_url=link_url,
+            image_url=gambar.url if gambar else None,
         )
         if not ok:
             await interaction.response.send_message(
@@ -166,6 +175,22 @@ class RobloxListingCog(commands.Cog):
                 ephemeral=True,
             )
             return
+
+        # Kalau item yang baru diedit ini KEBETULAN lagi ditampilin di
+        # panel yang udah keposting, refresh langsung -- gak perlu nunggu
+        # ada yang klik geser dulu buat liat perubahannya (misal gambar
+        # baru dari `gambar` di atas).
+        catalog = await roblox_q.get_catalog(self.bot.db, catalog_id)
+        if catalog and catalog["channel_id"] and catalog["message_id"] and catalog["current_index"] == nomor - 1:
+            channel = self.bot.get_channel(catalog["channel_id"])
+            if isinstance(channel, discord.TextChannel):
+                try:
+                    live_message = await channel.fetch_message(catalog["message_id"])
+                    items = await roblox_q.list_items(self.bot.db, catalog_id)
+                    await live_message.edit(view=RobloxCatalogView(catalog, items, catalog["current_index"]))
+                except discord.HTTPException:
+                    pass  # panel-nya kehapus/gak keakses -- gak masalah, gak ngeblock respon edit-nya
+
         await interaction.response.send_message(embed=embeds.success_embed("Item diupdate."), ephemeral=True)
 
     @item_group.command(name="remove", description="Hapus satu item dari katalog.")
