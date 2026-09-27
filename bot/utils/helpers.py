@@ -580,11 +580,18 @@ class RuntimeSettings:
     async def rstock_emoji_footer(self) -> str:
         return str(await self._get("rstock_emoji_footer", "\u2139\ufe0f"))
 
-    async def rstock_info_via_username(self) -> str:
-        return str(await self._get("rstock_info_via_username", "Belum diatur staff."))
+    async def rstock_amount(self, kind: str) -> int:
+        """Jumlah stock ANGKA (bukan teks bebas lagi) buat satu tipe --
+        `kind` salah satu dari "via_username"/"via_login"/"gamepass".
+        Diatur lewat /rstock set (angka pasti) atau /rstock tambah|kurang
+        (nambah/ngurang dari angka sekarang, misal abis ke-jual)."""
+        value = await self._get(f"rstock_amount_{kind}", "0")
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
 
-    async def rstock_info_via_login(self) -> str:
-        return str(await self._get("rstock_info_via_login", "Belum diatur staff."))
-
-    async def rstock_info_gamepass(self) -> str:
-        return str(await self._get("rstock_info_gamepass", "Belum diatur staff."))
+    async def rstock_price(self, kind: str) -> str:
+        """Info harga (teks bebas, TERPISAH dari jumlah stock) buat satu
+        tipe -- diatur lewat /rstock set."""
+        return str(await self._get(f"rstock_price_{kind}", "Belum diatur staff."))
