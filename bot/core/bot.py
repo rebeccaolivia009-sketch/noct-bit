@@ -48,6 +48,13 @@ class NoctraBot(commands.Bot):
     def __init__(self) -> None:
         intents = discord.Intents.default()
         intents.members = True  # needed to reliably manage ticket channel permissions
+        # WAJIB buat listener kayak bot.cogs.roblox_stock (trigger kata kunci
+        # "rstock" di channel server) -- tanpa ini, message.content kosong
+        # buat pesan yang gak nge-mention bot, jadi keyword-nya gak akan
+        # pernah kedeteksi. Juga HARUS dinyalain di Discord Developer Portal
+        # -> tab Bot -> Privileged Gateway Intents -> MESSAGE CONTENT INTENT,
+        # baris ini doang gak cukup kalau toggle di portal-nya masih mati.
+        intents.message_content = True
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.db = Database(config.database_path)
 
