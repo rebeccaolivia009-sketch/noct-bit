@@ -93,6 +93,7 @@ async def update_item_at(
     db: Database, catalog_id: int, zero_based_index: int, *,
     item_title: str | None = None, stock_info: str | None = None,
     link_label: str | None = None, link_url: str | None = None,
+    image_url: str | None = None,
 ) -> bool:
     """Cuma field yang diisi (bukan None) yang keupdate. Return True kalau
     nomor item-nya valid, False kalau enggak."""
@@ -101,7 +102,10 @@ async def update_item_at(
         return False
     target_id = items[zero_based_index]["id"]
 
-    fields = {"item_title": item_title, "stock_info": stock_info, "link_label": link_label, "link_url": link_url}
+    fields = {
+        "item_title": item_title, "stock_info": stock_info,
+        "link_label": link_label, "link_url": link_url, "image_url": image_url,
+    }
     fields = {k: v for k, v in fields.items() if v is not None}
     if not fields:
         return True
