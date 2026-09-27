@@ -12,15 +12,17 @@ Dua pengaman anti-spam:
     gak ngasih pesan error/peringatan juga -- itu sendiri bisa jadi
     sasaran spam kalau dibales).
 
-Isi stock (teks bebas per tipe) & emoji custom-nya diatur staff lewat
-/rstock stock dan /rstock emoji -- SEMUA bagian (judul, tiap tipe,
-footer) WAJIB ada emoji, makanya semuanya punya default kalau staff
-belum sempet atur (lihat RuntimeSettings.rstock_emoji_*).
+Jumlah stock (ANGKA, bisa nambah/ngurang -- bukan teks bebas) diatur
+lewat /rstock set (angka pasti) / /rstock tambah / /rstock kurang, emoji
+custom-nya lewat /rstock emoji -- SEMUA bagian (judul, tiap tipe, footer)
+WAJIB ada emoji, makanya semuanya punya default kalau staff belum sempet
+atur (lihat RuntimeSettings.rstock_emoji_*).
 """
 
 from __future__ import annotations
 
 import time
+from typing import Literal
 
 import discord
 from discord import app_commands
@@ -34,6 +36,9 @@ from bot.utils.permissions import staff_only
 TRIGGER_KEYWORD = "rstock"
 COOLDOWN_SECONDS = 10
 AUTO_DELETE_SECONDS = 120
+
+RstockType = Literal["via_username", "via_login", "gamepass"]
+_TYPE_LABELS = {"via_username": "Via Username", "via_login": "Via Login", "gamepass": "Gamepass"}
 
 
 def _parse_custom_emoji(value: str | None) -> str | None:
@@ -94,33 +99,73 @@ class RobloxStockCog(commands.Cog):
         runtime = RuntimeSettings(self.bot.db)
         container = components.rstock_container(
             await runtime.rstock_emoji_title(),
-            await runtime.rstock_emoji_via_username(), await runtime.rstock_info_via_username(),
-            await runtime.rstock_emoji_via_login(), await runtime.rstock_info_via_login(),
-            await runtime.rstock_emoji_gamepass(), await runtime.rstock_info_gamepass(),
+            await runtime.rstock_emoji_via_username(),
+            await runtime.rstock_amount("via_username"), await runtime.rstock_price("via_username"),
+            await runtime.rstock_emoji_via_login(),
+            await runtime.rstock_amount("via_login"), await runtime.rstock_price("via_login"),
+            await runtime.rstock_emoji_gamepass(),
+            await runtime.rstock_amount("gamepass"), await runtime.rstock_price("gamepass"),
             await runtime.rstock_emoji_footer(),
         )
         return components.NoctraLayout(container, timeout=None)
 
+    async def _adjust_amount(self, kind: str, delta: int) -> int:
+        """Nambah/ngurang stock dari angka SEKARANG (bukan nimpa ke angka
+        pasti) -- dipake /rstock tambah & /rstock kurang. Diklem di 0,
+        gak bisa minus walau dikurang lebih banyak dari stock yang ada."""
+        runtime = RuntimeSettings(self.bot.db)
+        current = await runtime.rstock_amount(kind)
+        new_amount = max(0, current + delta)
+        await settings_q.set_setting(self.bot.db, f"rstock_amount_{kind}", str(new_amount))
+        return new_amount
+
     # -- Command staff --------------------------------------------------------
 
-    @rstock_group.command(name="stock", description="Atur isi stock ROBUX per tipe (kosongin parameter yang gak diubah).")
+    @rstock_group.command(name="set", description="Set stock ke ANGKA PASTI buat satu tipe ROBUX (nimpa, bukan nambah/ngurang).")
     @app_commands.describe(
-        via_username="Isi stock/harga buat tipe Via Username",
-        via_login="Isi stock/harga buat tipe Via Login",
-        gamepass="Isi stock/harga buat tipe Gamepass",
+        tipe="Tipe ROBUX yang mau diset",
+        jumlah="Jumlah stock -- angka pasti, nimpa yang lama",
+        harga="Info harga (opsional, kosongin kalau gak diubah) -- misal 'Rp13.000 / 100 Robux'",
     )
     @staff_only()
-    async def stock(
-        self, interaction: discord.Interaction,
-        via_username: str | None = None, via_login: str | None = None, gamepass: str | None = None,
+    async def set_stock(
+        self, interaction: discord.Interaction, tipe: RstockType,
+        jumlah: app_commands.Range[int, 0, None], harga: str | None = None,
     ) -> None:
-        if via_username is not None:
-            await settings_q.set_setting(self.bot.db, "rstock_info_via_username", via_username)
-        if via_login is not None:
-            await settings_q.set_setting(self.bot.db, "rstock_info_via_login", via_login)
-        if gamepass is not None:
-            await settings_q.set_setting(self.bot.db, "rstock_info_gamepass", gamepass)
-        await interaction.response.send_message(embed=embeds.success_embed("Stock ROBUX diupdate."), ephemeral=True)
+        await settings_q.set_setting(self.bot.db, f"rstock_amount_{tipe}", str(jumlah))
+        if harga is not None:
+            await settings_q.set_setting(self.bot.db, f"rstock_price_{tipe}", harga)
+        message = f"Stock **{_TYPE_LABELS[tipe]}** diset ke **{jumlah}**."
+        if harga is not None:
+            message += " Harga ikut diupdate."
+        await interaction.response.send_message(embed=embeds.success_embed(message), ephemeral=True)
+
+    @rstock_group.command(name="tambah", description="Nambahin stock satu tipe ROBUX (misal abis restock).")
+    @app_commands.describe(tipe="Tipe ROBUX", jumlah="Jumlah yang ditambahin ke stock sekarang")
+    @staff_only()
+    async def add_stock(
+        self, interaction: discord.Interaction, tipe: RstockType, jumlah: app_commands.Range[int, 1, None]
+    ) -> None:
+        new_amount = await self._adjust_amount(tipe, jumlah)
+        await interaction.response.send_message(
+            embed=embeds.success_embed(f"Stock **{_TYPE_LABELS[tipe]}** ditambah **{jumlah}** -> sekarang **{new_amount}**."),
+            ephemeral=True,
+        )
+
+    @rstock_group.command(name="kurang", description="Ngurangin stock satu tipe ROBUX (misal abis ke-jual).")
+    @app_commands.describe(tipe="Tipe ROBUX", jumlah="Jumlah yang dikurangin dari stock sekarang")
+    @staff_only()
+    async def subtract_stock(
+        self, interaction: discord.Interaction, tipe: RstockType, jumlah: app_commands.Range[int, 1, None]
+    ) -> None:
+        new_amount = await self._adjust_amount(tipe, -jumlah)
+        clamp_note = " (udah kepentok 0, gak bisa minus)" if new_amount == 0 else ""
+        await interaction.response.send_message(
+            embed=embeds.success_embed(
+                f"Stock **{_TYPE_LABELS[tipe]}** dikurang **{jumlah}** -> sekarang **{new_amount}**{clamp_note}."
+            ),
+            ephemeral=True,
+        )
 
     @rstock_group.command(name="emoji", description="Atur emoji custom di tiap bagian panel (kosongin yang gak diubah).")
     @app_commands.describe(
@@ -157,14 +202,18 @@ class RobloxStockCog(commands.Cog):
     @staff_only()
     async def view(self, interaction: discord.Interaction) -> None:
         runtime = RuntimeSettings(self.bot.db)
-        lines = [
-            f"\u25b8 **Judul:** {await runtime.rstock_emoji_title()} STOCK ROBUX",
-            f"\u25b8 **Via Username:** {await runtime.rstock_emoji_via_username()} {await runtime.rstock_info_via_username()}",
-            f"\u25b8 **Via Login:** {await runtime.rstock_emoji_via_login()} {await runtime.rstock_info_via_login()}",
-            f"\u25b8 **Gamepass:** {await runtime.rstock_emoji_gamepass()} {await runtime.rstock_info_gamepass()}",
-            f"\u25b8 **Footer:** {await runtime.rstock_emoji_footer()}",
-            f"\u25b8 **Trigger:** `{TRIGGER_KEYWORD}` (persis, case-insensitive) -- jeda {COOLDOWN_SECONDS} detik/channel, auto-hapus {AUTO_DELETE_SECONDS // 60} menit.",
-        ]
+        lines = [f"\u25b8 **Judul:** {await runtime.rstock_emoji_title()} STOCK ROBUX"]
+        for kind in ("via_username", "via_login", "gamepass"):
+            amount = await runtime.rstock_amount(kind)
+            price = await runtime.rstock_price(kind)
+            emoji = await getattr(runtime, f"rstock_emoji_{kind}")()
+            status = "Ready" if amount > 0 else "Habis"
+            lines.append(f"\u25b8 **{_TYPE_LABELS[kind]}:** {emoji} Stock **{amount}** ({status}) -- {price}")
+        lines.append(f"\u25b8 **Footer:** {await runtime.rstock_emoji_footer()}")
+        lines.append(
+            f"\u25b8 **Trigger:** `{TRIGGER_KEYWORD}` (persis, case-insensitive) -- "
+            f"jeda {COOLDOWN_SECONDS} detik/channel, auto-hapus {AUTO_DELETE_SECONDS // 60} menit."
+        )
         await interaction.response.send_message(
             embed=embeds.info_embed("Stock ROBUX (rstock)", "\n".join(lines)), ephemeral=True
         )
