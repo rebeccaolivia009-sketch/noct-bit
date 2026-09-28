@@ -16,7 +16,7 @@ from discord.ext import commands
 from bot.database.queries import reviews as reviews_q
 from bot.ui import embeds
 from bot.ui.views import build_join_server_view
-from bot.utils import order_actions
+from bot.utils import order_actions, review_actions
 
 
 class ReviewPhotoCog(commands.Cog):
@@ -46,12 +46,21 @@ class ReviewPhotoCog(commands.Cog):
         await reviews_q.update_review(db, review["id"], image_url=image_attachment.url)
         await reviews_q.set_awaiting_photo(db, review["id"], False)
 
+        # Review-nya FINAL di titik ini (foto beneran nyampe) -- langsung
+        # approve + tayang publik, gak nunggu staff lagi. Ini SATU-SATUNYA
+        # tempat post_review_publicly dipanggil buat jalur "kirim foto";
+        # jalur "lewatin foto" ada di views.SkipPhotoButton -- lihat
+        # catatan di situ soal kenapa gak boleh dipanggil dua kali
+        # (post_review_publicly bikin pesan BARU tiap dipanggil).
+        await reviews_q.set_review_status(db, review["id"], "approved")
+        posted = await review_actions.post_review_publicly(self.bot, review["id"])
+
+        text = "Foto udah ditambahin ke review kamu. Makasih ya udah berbagi!"
+        if posted:
+            text += " Review kamu langsung tayang di channel review publik."
         try:
             join_view = await build_join_server_view(db)
-            await message.channel.send(
-                embed=embeds.success_embed("Foto udah ditambahin ke review kamu. Makasih ya udah berbagi!"),
-                view=join_view,
-            )
+            await message.channel.send(embed=embeds.success_embed(text), view=join_view)
         except discord.HTTPException:
             pass
 

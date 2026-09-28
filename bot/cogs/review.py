@@ -45,21 +45,9 @@ async def _my_reviewed_order_autocomplete(
     return choices
 
 
-async def _pending_review_autocomplete(
-    interaction: discord.Interaction, current: str
-) -> list[app_commands.Choice[int]]:
-    db = interaction.client.db  # type: ignore[attr-defined]
-    rows = await reviews_q.list_pending_reviews(db, limit=25)
-    choices = []
-    for r in rows:
-        product = await products_q.get_product(db, r["product_id"])
-        name = product["name"] if product else "Produk gak ketemu"
-        choices.append(app_commands.Choice(name=f"#{r['id']} -- {name} ({r['rating']}/5)", value=r["id"]))
-    return choices
-
-
 class ReviewCog(commands.Cog):
-    """Review produk dari customer yang order-nya udah completed & paid -- nunggu approve staff."""
+    """Review produk dari customer yang order-nya udah completed & paid -- langsung tayang publik begitu
+    final (auto-approve, gak ada antrian approve staff lagi). Staff tetep bisa hide/delete belakangan."""
 
     review_group = app_commands.Group(name="review", description="Kelola review produk.", guild_only=True)
     admin_group = app_commands.Group(
@@ -110,15 +98,23 @@ class ReviewCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        await reviews_q.create_review(
+        review_id = await reviews_q.create_review(
             self.bot.db, order, order_row["product_id"], interaction.user.id, rating, review, anonymous
         )
-        await interaction.response.send_message(
-            embed=embeds.success_embed(
-                "Makasih! Review kamu udah dikirim dan lagi nunggu approve staff."
-            ),
-            ephemeral=True,
+        # Jalur slash command gak punya langkah foto sama sekali, jadi
+        # review-nya udah FINAL begitu dibikin -- langsung approve + tayang
+        # publik di sini (post_review_publicly cuma boleh dipanggil sekali
+        # per review, lihat catatan di views.SkipPhotoButton).
+        await reviews_q.set_review_status(self.bot.db, review_id, "approved")
+        posted = await review_actions.post_review_publicly(self.bot, review_id)
+
+        message = "Makasih! Review kamu udah kekirim"
+        message += (
+            " dan langsung tayang di channel review publik."
+            if posted else
+            ", tapi channel review publik belum diatur staff jadi belum keliatan publik."
         )
+        await interaction.response.send_message(embed=embeds.success_embed(message), ephemeral=True)
 
     @review_group.command(name="edit", description="Edit review kamu yang udah ada.")
     @app_commands.describe(order="Order yang review-nya mau kamu edit", rating="Rating baru", review="Teks review baru", anonymous="Sembunyiin nama kamu")
@@ -135,7 +131,7 @@ class ReviewCog(commands.Cog):
         if not existing or existing["user_id"] != interaction.user.id:
             await interaction.response.send_message(embed=embeds.error_embed("Review gak ketemu."), ephemeral=True)
             return
-        updates: dict = {"status": "pending"}
+        updates: dict = {"status": "approved"}
         if rating is not None:
             updates["rating"] = rating
         if review is not None:
@@ -144,7 +140,11 @@ class ReviewCog(commands.Cog):
             updates["anonymous"] = int(anonymous)
         await reviews_q.update_review(self.bot.db, existing["id"], **updates)
         await interaction.response.send_message(
-            embed=embeds.success_embed("Review udah diupdate dan dikirim ulang buat nunggu approve."), ephemeral=True
+            embed=embeds.success_embed(
+                "Review udah diupdate. Catatan: kalau review ini udah pernah tayang di channel review "
+                "publik, postingan lamanya gak keupdate otomatis -- tetep nunjukin isi sebelum diedit."
+            ),
+            ephemeral=True,
         )
 
     @review_group.command(name="delete", description="Hapus review kamu.")
@@ -181,35 +181,6 @@ class ReviewCog(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # -- Moderasi Admin -----------------------------------------------------
-
-    @admin_group.command(name="approve", description="Approve review yang pending, bikin dia keliatan publik.")
-    @app_commands.describe(review_id="Review pending yang mau di-approve")
-    @app_commands.autocomplete(review_id=_pending_review_autocomplete)
-    @staff_only()
-    async def approve(self, interaction: discord.Interaction, review_id: int) -> None:
-        if not await reviews_q.get_review(self.bot.db, review_id):
-            await interaction.response.send_message(embed=embeds.error_embed("Review gak ketemu."), ephemeral=True)
-            return
-        await reviews_q.set_review_status(self.bot.db, review_id, "approved")
-        posted = await review_actions.post_review_publicly(self.bot, review_id)
-        message = "Review udah di-approve."
-        if posted:
-            message += " Udah diposting ke channel review publik."
-        await interaction.response.send_message(embed=embeds.success_embed(message), ephemeral=True)
-        await activity_log.log_activity(
-            self.bot, interaction.user, "Review Di-approve", f"Review #{review_id} di-approve."
-        )
-
-    @admin_group.command(name="reject", description="Reject review yang pending.")
-    @app_commands.describe(review_id="Review pending yang mau di-reject")
-    @app_commands.autocomplete(review_id=_pending_review_autocomplete)
-    @staff_only()
-    async def reject(self, interaction: discord.Interaction, review_id: int) -> None:
-        await reviews_q.set_review_status(self.bot.db, review_id, "rejected")
-        await interaction.response.send_message(embed=embeds.success_embed("Review udah di-reject."), ephemeral=True)
-        await activity_log.log_activity(
-            self.bot, interaction.user, "Review Di-reject", f"Review #{review_id} di-reject."
-        )
 
     @admin_group.command(name="hide", description="Sembunyiin review yang sebelumnya udah di-approve.")
     @app_commands.describe(review_id="Review yang mau disembunyiin")
