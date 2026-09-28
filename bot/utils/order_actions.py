@@ -107,8 +107,11 @@ async def send_message_to_customer(
     if is_owner:
         embed.colour = COLOR_WARNING
         if embed.title:
+            # Emoji badge cuma di JUDUL -- footer embed itu plain text di
+            # Discord, emoji custom (<:nama:id>) gak dirender di situ dan
+            # muncul mentah, makanya footer di bawah sengaja tanpa emoji.
             embed.title = f"{badge} {embed.title}"
-        embed.set_footer(text=f"{badge} Dibales LANGSUNG oleh Owner Noctra Store \u2014 {actor_display}")
+        embed.set_footer(text=f"Dibales LANGSUNG oleh Owner Noctra Store \u2014 {actor_display}")
     elif actor_display:
         embed.set_footer(text=f"Dibales oleh staff {actor_display}")
 
@@ -322,7 +325,9 @@ async def mark_paid(bot, order_id: int, actor: discord.abc.User | None = None) -
     approval_embed = embeds.success_embed(approval_text)
     if is_owner:
         approval_embed.colour = COLOR_WARNING
-        approval_embed.set_footer(text=f"{badge} Owner Noctra Store")
+        # Footer = plain text, emoji custom gak dirender di sini (badge-nya
+        # udah nongol di deskripsi approval_text di atas yang bisa ngerender).
+        approval_embed.set_footer(text="Owner Noctra Store")
 
     await _notify_customer(
         bot,
