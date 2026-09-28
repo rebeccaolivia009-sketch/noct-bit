@@ -102,12 +102,18 @@ class RuntimeSettings:
     async def owner_user_id(self) -> int | None:
         """ID Discord akun OWNER store -- diatur lewat /settings owner.
         Dipake buat nunjukin balesan customer yang SPESIAL (warna beda,
-        badge mahkota, footer khusus) kalau yang bales itu owner sendiri,
+        badge emoji, footer khusus) kalau yang bales itu owner sendiri,
         bukan staff biasa -- lihat bot.utils.order_actions
         (send_message_to_customer & mark_paid). None kalau belum pernah
         diatur (semua balesan dianggep staff biasa)."""
         value = await self._get("owner_user_id", None)
         return int(value) if value else None
+
+    async def owner_badge_emoji(self) -> str:
+        """Emoji badge yang nempel di balesan spesial owner -- diatur
+        lewat /settings owner (boleh emoji custom server). Default
+        mahkota unicode kalau owner belum sempet atur emoji sendiri."""
+        return str(await self._get("owner_badge_emoji", "\U0001F451"))
 
     async def order_log_channel_id(self) -> int | None:
         value = await self._get("order_log_channel_id", None)

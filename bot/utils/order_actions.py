@@ -102,12 +102,13 @@ async def send_message_to_customer(
     langsung ngerasa "wah dibales owner-nya sendiri", bukan staff biasa."""
     actor_display = _display_name(actor)
     is_owner = await _is_owner(bot.db, actor)
+    badge = await RuntimeSettings(bot.db).owner_badge_emoji() if is_owner else None
 
     if is_owner:
         embed.colour = COLOR_WARNING
         if embed.title:
-            embed.title = f"\U0001F451 {embed.title}"
-        embed.set_footer(text=f"\U0001F451 Dibales LANGSUNG oleh Owner Noctra Store \u2014 {actor_display}")
+            embed.title = f"{badge} {embed.title}"
+        embed.set_footer(text=f"{badge} Dibales LANGSUNG oleh Owner Noctra Store \u2014 {actor_display}")
     elif actor_display:
         embed.set_footer(text=f"Dibales oleh staff {actor_display}")
 
@@ -115,7 +116,7 @@ async def send_message_to_customer(
 
     if sent and order_id is not None and actor_display:
         try:
-            sender_label = f"\U0001F451 OWNER {actor_display}" if is_owner else f"Staff {actor_display}"
+            sender_label = f"{badge} OWNER {actor_display}" if is_owner else f"Staff {actor_display}"
             line = f"**[{order_chat.now_str()}] {sender_label} (balasan):** {embed.description or '*(lampiran)*'}"
             customer = bot.get_user(user_id) or await bot.fetch_user(user_id)
             await order_chat.append_and_refresh(bot, order_id, customer, line)
@@ -308,8 +309,9 @@ async def mark_paid(bot, order_id: int, actor: discord.abc.User | None = None) -
     is_owner = await _is_owner(db, actor)
 
     if is_owner:
+        badge = await RuntimeSettings(db).owner_badge_emoji()
         approval_text = (
-            f"\U0001F451 Order kamu #{order_id} udah **disetujui LANGSUNG oleh Owner Noctra Store** "
+            f"{badge} Order kamu #{order_id} udah **disetujui LANGSUNG oleh Owner Noctra Store** "
             f"({actor_display}) dan lagi diproses!"
         )
     elif actor_display:
@@ -320,7 +322,7 @@ async def mark_paid(bot, order_id: int, actor: discord.abc.User | None = None) -
     approval_embed = embeds.success_embed(approval_text)
     if is_owner:
         approval_embed.colour = COLOR_WARNING
-        approval_embed.set_footer(text="\U0001F451 Owner Noctra Store")
+        approval_embed.set_footer(text=f"{badge} Owner Noctra Store")
 
     await _notify_customer(
         bot,
