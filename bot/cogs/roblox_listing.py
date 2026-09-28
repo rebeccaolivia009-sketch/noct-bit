@@ -9,7 +9,7 @@ Alur pemakaian:
   1. /roblox catalog create [panel_title] -- bikin katalog (panel) baru,
      balesannya ngasih tau ID katalognya.
   2. /roblox item add catalog_id:<> item_title:<> stock_info:<>
-     gambar:<upload> [link_label] [link_url] -- ulang buat tiap item
+     gambar_url:<link gambar yang udah di-hosting> [link_label] [link_url] -- ulang buat tiap item
      yang mau ditambahin ke katalog itu.
   3. /roblox panel catalog_id:<> -- posting panelnya di channel ini.
 
@@ -100,7 +100,10 @@ class RobloxListingCog(commands.Cog):
         catalog_id="ID katalog (liat di /roblox catalog list)",
         item_title="Nama item -- misal 'Dominus Empyreus'",
         stock_info="Info stock/harga, bebas format -- misal 'Stock: 2 | Harga: Rp150.000'",
-        gambar="Gambar item ini",
+        gambar_url=(
+            "URL gambar item ini -- HARUS udah di-hosting (imgur/postimages/dst), "
+            "BUKAN link upload attachment Discord (linknya kedaluwarsa)"
+        ),
         link_label="Teks tombol link",
         link_url="URL tombol link -- misal link trade/checkout/katalog Roblox",
     )
@@ -111,15 +114,10 @@ class RobloxListingCog(commands.Cog):
         catalog_id: int,
         item_title: str,
         stock_info: str,
-        gambar: discord.Attachment,
+        gambar_url: str,
         link_label: str = "Beli Sekarang",
         link_url: str = "https://www.roblox.com/",
     ) -> None:
-        if not gambar.content_type or not gambar.content_type.startswith("image/"):
-            await interaction.response.send_message(
-                embed=embeds.error_embed("File yang diupload harus berupa gambar."), ephemeral=True
-            )
-            return
         catalog = await roblox_q.get_catalog(self.bot.db, catalog_id)
         if catalog is None:
             await interaction.response.send_message(
@@ -127,7 +125,7 @@ class RobloxListingCog(commands.Cog):
             )
             return
 
-        await roblox_q.add_item(self.bot.db, catalog_id, item_title, gambar.url, stock_info, link_label, link_url)
+        await roblox_q.add_item(self.bot.db, catalog_id, item_title, gambar_url, stock_info, link_label, link_url)
         total = len(await roblox_q.list_items(self.bot.db, catalog_id))
         await interaction.response.send_message(
             embed=embeds.success_embed(
@@ -144,7 +142,10 @@ class RobloxListingCog(commands.Cog):
         stock_info="Info stock baru (kosongin kalau gak diubah)",
         link_label="Teks tombol link baru (kosongin kalau gak diubah)",
         link_url="URL tombol link baru (kosongin kalau gak diubah)",
-        gambar="Gambar baru buat item ini (kosongin kalau gambarnya gak diubah)",
+        gambar_url=(
+            "URL gambar baru (kosongin kalau gak diubah) -- HARUS udah di-hosting "
+            "(imgur/postimages/dst), BUKAN link upload attachment Discord (linknya kedaluwarsa)"
+        ),
     )
     @staff_only()
     async def item_edit(
@@ -156,18 +157,12 @@ class RobloxListingCog(commands.Cog):
         stock_info: str | None = None,
         link_label: str | None = None,
         link_url: str | None = None,
-        gambar: discord.Attachment | None = None,
+        gambar_url: str | None = None,
     ) -> None:
-        if gambar is not None and (not gambar.content_type or not gambar.content_type.startswith("image/")):
-            await interaction.response.send_message(
-                embed=embeds.error_embed("File yang diupload harus berupa gambar."), ephemeral=True
-            )
-            return
-
         ok = await roblox_q.update_item_at(
             self.bot.db, catalog_id, nomor - 1,
             item_title=item_title, stock_info=stock_info, link_label=link_label, link_url=link_url,
-            image_url=gambar.url if gambar else None,
+            image_url=gambar_url,
         )
         if not ok:
             await interaction.response.send_message(
@@ -179,7 +174,7 @@ class RobloxListingCog(commands.Cog):
         # Kalau item yang baru diedit ini KEBETULAN lagi ditampilin di
         # panel yang udah keposting, refresh langsung -- gak perlu nunggu
         # ada yang klik geser dulu buat liat perubahannya (misal gambar
-        # baru dari `gambar` di atas).
+        # baru dari `gambar_url` di atas).
         catalog = await roblox_q.get_catalog(self.bot.db, catalog_id)
         if catalog and catalog["channel_id"] and catalog["message_id"] and catalog["current_index"] == nomor - 1:
             channel = self.bot.get_channel(catalog["channel_id"])
