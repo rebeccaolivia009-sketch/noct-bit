@@ -52,7 +52,7 @@ from bot.database.queries import roblox_listings as roblox_q
 from bot.database.queries import ticket_types as ticket_types_q
 from bot.ui import components, embeds
 from bot.ui.modals import MessageModal, ReasonModal, ReviewTextModal, collect_dynamic_fields
-from bot.utils import card_actions, order_actions, ticket_actions
+from bot.utils import card_actions, order_actions, review_actions, ticket_actions
 from bot.utils.helpers import RuntimeSettings, calculate_final_price, format_price
 from bot.utils.permissions import is_staff
 from bot.utils.validators import FieldValidationError, parse_hex_color, validate_field_value
@@ -1256,9 +1256,23 @@ class SkipPhotoButton(discord.ui.Button):
             )
             return
         await reviews_q.set_awaiting_photo(db, self.review_id, False)
+
+        # Review-nya FINAL di titik ini (customer milih lewatin foto) --
+        # langsung approve + tayang publik, gak nunggu staff lagi.
+        # review_actions.post_review_publicly BUKAN idempotent (nge-post
+        # pesan BARU tiap dipanggil), jadi CUMA boleh dipanggil PAS SEKALI
+        # per review, persis di titik review-nya beneran final -- di sini
+        # (lewatin foto) ATAU di bot.cogs.review_photo (foto beneran
+        # nyampe), JANGAN dua-duanya.
+        await reviews_q.set_review_status(db, self.review_id, "approved")
+        posted = await review_actions.post_review_publicly(interaction.client, self.review_id)
+
+        text = "Santai -- review kamu udah masuk tanpa foto."
+        if posted:
+            text += " Langsung tayang di channel review publik!"
         join_view = await build_join_server_view(db)
         await interaction.response.send_message(
-            embed=embeds.success_embed("Santai -- review kamu udah masuk tanpa foto."),
+            embed=embeds.success_embed(text),
             view=join_view,
             ephemeral=True,
         )

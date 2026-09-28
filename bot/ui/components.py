@@ -707,6 +707,11 @@ def store_status_container(
     children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
 
     jam_text = f"**Jam Operasional**\n{open_time} \u2013 {close_time} WIB"
+    if not is_open:
+        jam_text += (
+            "\n\nTerimakasih telah sudah berbelanja hari ini, "
+            "semoga makin melimpah rezeki kalian"
+        )
     if ping_role_id:
         jam_text += f"\n-# \U0001F514 Notifikasi buka/tutup: <@&{ping_role_id}>"
     children.append(discord.ui.TextDisplay(jam_text))
