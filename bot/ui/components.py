@@ -859,13 +859,17 @@ def payment_methods_container(methods: list) -> discord.ui.Container:
 
 
 def roblox_profile_container(profile: dict) -> discord.ui.Container:
-    """Isi kartu hasil /checkprofile -- avatar Roblox digambar GEDE
-    (MediaGallery, bukan thumbnail kecil, soalnya "penting" sesuai
-    request), detail akun data ASLI dari Roblox API
-    (bot.utils.roblox_api), bukan checker abal-abal. Saldo Robux SENGAJA
-    ditulis "gak bisa dicek" -- Roblox emang gak pernah nge-expose saldo
-    akun ORANG LAIN ke publik, jadi nampilin angka di situ bakal selalu
-    bohong, sekeren apapun tampilannya."""
+    """Isi kartu hasil /checkprofile -- tata letak PERSIS yang diminta:
+    judul -> pemisah -> avatar Roblox (gede, MediaGallery bukan
+    thumbnail kecil) -> pemisah -> data profil (username/display name/
+    tanggal dibuat/User ID) -> pemisah -> footer. Data ASLI dari Roblox
+    API (bot.utils.roblox_api), bukan checker abal-abal. GAK ada saldo
+    Robux -- itu emang gak pernah bisa dicek buat akun orang lain
+    (Roblox gak expose itu ke publik), jadi field itu dibuang total
+    daripada nampilin sesuatu yang gak bisa diisi jujur."""
+    verified = " \u2713" if profile.get("has_verified_badge") else ""
+    banned_note = "\n\u26A0\uFE0F **Akun ini KEBAN di Roblox.**" if profile.get("is_banned") else ""
+
     children: list = [
         discord.ui.TextDisplay("## \U0001F3AE Roblox Profile Checker"),
         discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
@@ -875,21 +879,15 @@ def roblox_profile_container(profile: dict) -> discord.ui.Container:
         children.append(discord.ui.MediaGallery(discord.MediaGalleryItem(media=profile["avatar_url"])))
         children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
 
-    verified = " \u2713" if profile.get("has_verified_badge") else ""
-    banned_note = "\n\u26A0\uFE0F **Akun ini KEBAN di Roblox.**" if profile.get("is_banned") else ""
-
     detail_text = (
         f"**Username:** @{profile['name']}{verified}\n"
         f"**Display Name:** {profile['display_name']}\n"
-        f"**User ID:** {profile['id']}\n"
-        f"**Dibuat:** {profile.get('created_display', '?')} ({profile.get('account_age_display', '')})\n"
-        f"**Saldo Robux:** *Gak bisa dicek \u2014 Roblox gak nge-expose saldo akun orang lain ke publik*"
+        f"**Tanggal Pembuatan:** {profile.get('created_display', '?')} ({profile.get('account_age_display', '')})\n"
+        f"**User ID:** {profile['id']}"
         f"{banned_note}"
     )
     children.append(discord.ui.TextDisplay(detail_text))
     children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
-    children.append(
-        discord.ui.TextDisplay("-# Data diambil langsung dari Roblox API -- pastiin ini profil customer kamu.")
-    )
+    children.append(discord.ui.TextDisplay("-# Roblox Profile Checker \u2014 by Noctra Digital Store"))
 
     return discord.ui.Container(*children, accent_colour=COLOR_ACCENT)
