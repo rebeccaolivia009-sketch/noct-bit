@@ -41,6 +41,9 @@ EXTENSIONS = (
     "bot.cogs.roblox_listing",
     "bot.cogs.shop_panel_task",
     "bot.cogs.roblox_stock",
+    "bot.cogs.npay_trigger",
+    "bot.cogs.nform_trigger",
+    "bot.cogs.roblox_profile",
 )
 
 
