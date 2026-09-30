@@ -818,3 +818,78 @@ def rstock_container(
         ),
     ]
     return discord.ui.Container(*children, accent_colour=COLOR_ACCENT)
+
+
+def payment_methods_container(methods: list) -> discord.ui.Container:
+    """Isi panel /npay -- daftar SEMUA metode pembayaran aktif (nama,
+    instruksi, emoji per-metode) yang udah diatur staff lewat command
+    payment method yang udah ada, BUKAN teks baru yang diketik ulang.
+    Gambar QR/rekening (kalau ada per-metode) digabung jadi SATU
+    MediaGallery di bawah -- MediaGallery Discord emang didesain buat
+    nampilin beberapa gambar sekaligus dalam grid, jadi semua QR/gambar
+    metode keliatan bareng tanpa perlu kirim pesan terpisah per metode."""
+    children: list = [
+        discord.ui.TextDisplay("## \U0001F4B3 Metode Pembayaran"),
+        discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
+    ]
+
+    if methods:
+        entries = []
+        for method in methods:
+            emoji = method["emoji"] or "\U0001F4B0"
+            entry = f"{emoji} **{method['name']}**"
+            if method["instructions"]:
+                entry += f"\n{method['instructions']}"
+            entries.append(entry)
+        children.append(discord.ui.TextDisplay("\n\n".join(entries)))
+    else:
+        children.append(discord.ui.TextDisplay("*(belum ada metode pembayaran yang aktif)*"))
+
+    image_urls = [m["image_url"] for m in methods if m["image_url"]]
+    if image_urls:
+        children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+        children.append(discord.ui.MediaGallery(*[discord.MediaGalleryItem(media=url) for url in image_urls]))
+
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+    children.append(
+        discord.ui.TextDisplay("-# Pilih salah satu metode di atas, terus konfirmasi ke staff abis transfer.")
+    )
+
+    return discord.ui.Container(*children, accent_colour=COLOR_SUCCESS)
+
+
+def roblox_profile_container(profile: dict) -> discord.ui.Container:
+    """Isi kartu hasil /checkprofile -- avatar Roblox digambar GEDE
+    (MediaGallery, bukan thumbnail kecil, soalnya "penting" sesuai
+    request), detail akun data ASLI dari Roblox API
+    (bot.utils.roblox_api), bukan checker abal-abal. Saldo Robux SENGAJA
+    ditulis "gak bisa dicek" -- Roblox emang gak pernah nge-expose saldo
+    akun ORANG LAIN ke publik, jadi nampilin angka di situ bakal selalu
+    bohong, sekeren apapun tampilannya."""
+    children: list = [
+        discord.ui.TextDisplay("## \U0001F3AE Roblox Profile Checker"),
+        discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
+    ]
+
+    if profile.get("avatar_url"):
+        children.append(discord.ui.MediaGallery(discord.MediaGalleryItem(media=profile["avatar_url"])))
+        children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+    verified = " \u2713" if profile.get("has_verified_badge") else ""
+    banned_note = "\n\u26A0\uFE0F **Akun ini KEBAN di Roblox.**" if profile.get("is_banned") else ""
+
+    detail_text = (
+        f"**Username:** @{profile['name']}{verified}\n"
+        f"**Display Name:** {profile['display_name']}\n"
+        f"**User ID:** {profile['id']}\n"
+        f"**Dibuat:** {profile.get('created_display', '?')} ({profile.get('account_age_display', '')})\n"
+        f"**Saldo Robux:** *Gak bisa dicek \u2014 Roblox gak nge-expose saldo akun orang lain ke publik*"
+        f"{banned_note}"
+    )
+    children.append(discord.ui.TextDisplay(detail_text))
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+    children.append(
+        discord.ui.TextDisplay("-# Data diambil langsung dari Roblox API -- pastiin ini profil customer kamu.")
+    )
+
+    return discord.ui.Container(*children, accent_colour=COLOR_ACCENT)
