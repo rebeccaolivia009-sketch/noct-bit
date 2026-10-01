@@ -44,6 +44,7 @@ EXTENSIONS = (
     "bot.cogs.npay_trigger",
     "bot.cogs.nform_trigger",
     "bot.cogs.roblox_profile",
+    "bot.cogs.presence_rotator",
 )
 
 
