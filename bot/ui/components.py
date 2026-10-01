@@ -858,7 +858,7 @@ def payment_methods_container(methods: list) -> discord.ui.Container:
     return discord.ui.Container(*children, accent_colour=COLOR_SUCCESS)
 
 
-def roblox_profile_container(profile: dict) -> discord.ui.Container:
+def roblox_profile_container(profile: dict, title_emoji: str = "\U0001F3AE") -> discord.ui.Container:
     """Isi kartu hasil /checkprofile -- tata letak PERSIS yang diminta:
     judul -> pemisah -> avatar Roblox (gede, MediaGallery bukan
     thumbnail kecil) -> pemisah -> data profil (username/display name/
@@ -866,12 +866,15 @@ def roblox_profile_container(profile: dict) -> discord.ui.Container:
     API (bot.utils.roblox_api), bukan checker abal-abal. GAK ada saldo
     Robux -- itu emang gak pernah bisa dicek buat akun orang lain
     (Roblox gak expose itu ke publik), jadi field itu dibuang total
-    daripada nampilin sesuatu yang gak bisa diisi jujur."""
+    daripada nampilin sesuatu yang gak bisa diisi jujur.
+
+    `title_emoji` boleh emoji custom server (diatur staff lewat
+    /checkprofile_emoji) -- default joystick unicode kalau belum diatur."""
     verified = " \u2713" if profile.get("has_verified_badge") else ""
     banned_note = "\n\u26A0\uFE0F **Akun ini KEBAN di Roblox.**" if profile.get("is_banned") else ""
 
     children: list = [
-        discord.ui.TextDisplay("## \U0001F3AE Roblox Profile Checker"),
+        discord.ui.TextDisplay(f"## {title_emoji} Roblox Profile Checker"),
         discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
     ]
 
