@@ -34,11 +34,33 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.core.logger import logger
+from bot.database.queries import settings as settings_q
 from bot.ui import components, embeds
+from bot.utils.helpers import RuntimeSettings
 from bot.utils.permissions import staff_only
 from bot.utils.roblox_api import RobloxAPIError, RobloxUserNotFound, fetch_roblox_profile
 
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,20}$")
+
+
+def _parse_custom_emoji(value: str | None) -> str | None:
+    """Validasi emoji -- terima emoji custom SERVER MANA PUN (format
+    <:nama:id> / <a:nama:id>) ATAU emoji unicode biasa. Return apa
+    adanya (string mentah, BUKAN di-convert ke PartialEmoji -- di sini
+    cuma ditempel ke teks TextDisplay, bukan jadi emoji tombol). None
+    kalau kosong. Raise ValueError kalau formatnya gak kebaca. Pola sama
+    persis kayak helper di bot.cogs.badge/rstock/dst."""
+    if not value or not value.strip():
+        return None
+    value = value.strip()
+    try:
+        discord.PartialEmoji.from_str(value)  # validasi doang, hasilnya dibuang
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(
+            f"Format emoji `{value}` gak kebaca. Pake emoji unicode biasa, atau emoji custom "
+            "server (ketik `\\:namaemoji:` di chat dulu buat dapet kode aslinya, terus tempel di sini)."
+        ) from exc
+    return value
 
 
 def _format_created(iso_str: str | None) -> tuple[str, str]:
@@ -62,12 +84,13 @@ class SendToChannelButton(discord.ui.Button):
     (bukan ephemeral) -- biar siapapun di channel itu (misal ticket)
     bisa liat & konfirmasi ini beneran profil mereka."""
 
-    def __init__(self, profile: dict) -> None:
+    def __init__(self, profile: dict, title_emoji: str) -> None:
         super().__init__(label="Kirim ke Channel Ini", style=discord.ButtonStyle.secondary, emoji="\U0001F4E4")
         self.profile = profile
+        self.title_emoji = title_emoji
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        container = components.roblox_profile_container(self.profile)
+        container = components.roblox_profile_container(self.profile, self.title_emoji)
         view = components.NoctraLayout(container, timeout=None)
         try:
             await interaction.channel.send(view=view)
@@ -87,13 +110,14 @@ class SendToDMButton(discord.ui.Button):
     sendiri Discord akun mana yang punya username Roblox itu, jadi harus
     staff yang nentuin)."""
 
-    def __init__(self, profile: dict, customer: discord.Member) -> None:
+    def __init__(self, profile: dict, customer: discord.Member, title_emoji: str) -> None:
         super().__init__(label=f"Kirim ke DM {customer.display_name}", style=discord.ButtonStyle.success, emoji="\U0001F4EC")
         self.profile = profile
         self.customer = customer
+        self.title_emoji = title_emoji
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        container = components.roblox_profile_container(self.profile)
+        container = components.roblox_profile_container(self.profile, self.title_emoji)
         view = components.NoctraLayout(container, timeout=None)
         try:
             await self.customer.send(view=view)
@@ -114,12 +138,12 @@ class SendToDMButton(discord.ui.Button):
 
 
 class ProfilePreviewView(discord.ui.LayoutView):
-    def __init__(self, profile: dict, customer: discord.Member | None) -> None:
+    def __init__(self, profile: dict, customer: discord.Member | None, title_emoji: str) -> None:
         super().__init__(timeout=300)
-        container = components.roblox_profile_container(profile)
-        buttons = [SendToChannelButton(profile)]
+        container = components.roblox_profile_container(profile, title_emoji)
+        buttons = [SendToChannelButton(profile, title_emoji)]
         if customer is not None:
-            buttons.append(SendToDMButton(profile, customer))
+            buttons.append(SendToDMButton(profile, customer, title_emoji))
         container.add_item(discord.ui.ActionRow(*buttons))
         self.add_item(container)
 
@@ -170,7 +194,29 @@ class RobloxProfileCog(commands.Cog):
         created_display, account_age = _format_created(raw_profile.get("created"))
         profile = {**raw_profile, "created_display": created_display, "account_age_display": account_age}
 
-        await interaction.followup.send(view=ProfilePreviewView(profile, customer), ephemeral=True)
+        title_emoji = await RuntimeSettings(self.bot.db).roblox_profile_title_emoji()
+        await interaction.followup.send(view=ProfilePreviewView(profile, customer, title_emoji), ephemeral=True)
+
+    @app_commands.command(name="checkprofile_emoji", description="Atur emoji di judul kartu /checkprofile (boleh emoji custom server).")
+    @app_commands.describe(emoji="Emoji buat judul kartu")
+    @app_commands.guild_only()
+    @staff_only()
+    async def checkprofile_emoji(self, interaction: discord.Interaction, emoji: str) -> None:
+        try:
+            parsed = _parse_custom_emoji(emoji)
+        except ValueError as exc:
+            await interaction.response.send_message(embed=embeds.error_embed(str(exc)), ephemeral=True)
+            return
+        if parsed is None:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Emoji-nya gak boleh kosong."), ephemeral=True
+            )
+            return
+
+        await settings_q.set_setting(self.bot.db, "roblox_profile_title_emoji", parsed)
+        await interaction.response.send_message(
+            embed=embeds.success_embed(f"Emoji judul kartu /checkprofile diatur ke {parsed}."), ephemeral=True
+        )
 
 
 async def setup(bot: commands.Bot) -> None:
