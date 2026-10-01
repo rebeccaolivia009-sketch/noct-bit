@@ -406,3 +406,15 @@ CREATE TABLE IF NOT EXISTS order_chat_panels (
     latest_image_url TEXT,
     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Daftar teks status "Watching ..." bot yang gonta-ganti otomatis (lihat
+-- bot.cogs.presence_rotator). Diisi SEKALI dengan daftar default pas
+-- tabelnya masih kosong (lihat PresenceRotatorCog.cog_load) -- bukan
+-- lewat INSERT di sini, soalnya schema.sql cuma jalan sekali tiap
+-- startup dan gak boleh nimpa ulang teks yang staff udah ubah lewat
+-- /presence add|remove.
+CREATE TABLE IF NOT EXISTS bot_presence_statuses (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    text      TEXT NOT NULL,
+    position  INTEGER NOT NULL DEFAULT 0
+);
