@@ -611,3 +611,9 @@ class RuntimeSettings:
         """Info harga (teks bebas, TERPISAH dari jumlah stock) buat satu
         tipe -- diatur lewat /rstock set."""
         return str(await self._get(f"rstock_price_{kind}", "Belum diatur staff."))
+
+    async def roblox_profile_title_emoji(self) -> str:
+        """Emoji di judul kartu /checkprofile -- boleh emoji custom
+        server, diatur lewat /checkprofile_emoji. Default joystick
+        unicode kalau staff belum sempet atur sendiri."""
+        return str(await self._get("roblox_profile_title_emoji", "\U0001F3AE"))
