@@ -103,6 +103,73 @@ _SEMIBOLD = _resolve_font_path(_SEMIBOLD_CANDIDATES)
 _MEDIUM = _resolve_font_path(_MEDIUM_CANDIDATES)
 _REG = _resolve_font_path(_REG_CANDIDATES)
 
+# Poppins CUMA nyimpen glyph Latin -- nama Discord yang pake karakter di
+# luar itu (simbol dekoratif, aksara lain, dst) bakal muncul kotak
+# kosong (tofu glyph) kalau dipaksa pake Poppins, soalnya PIL/FreeType
+# GAK otomatis fallback ke font lain kayak browser. DejaVu (fallback
+# "polos", gak punya varian SemiBold) dipake KHUSUS buat nama yang
+# punya karakter di luar cakupan Poppins -- lihat _pick_name_font &
+# _sanitize_name di bawah.
+_DEJAVU_BOLD_ONLY = _resolve_font_path([
+    _ASSETS_DIR / "DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+])
+_DEJAVU_REG_ONLY = _resolve_font_path([
+    _ASSETS_DIR / "DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+])
+
+
+def _poppins_safe(ch: str) -> bool:
+    """True kalau karakter ini di rentang yang didukung solid sama
+    Poppins -- Latin dasar + Latin-1 Supplement + Latin Extended A/B +
+    tanda baca umum + simbol mata uang. Nama yang SEMUA karakternya lolos
+    ini tetep dirender Poppins (tipografi lebih bagus); kalau ENGGAK,
+    seluruh nama itu dialihin ke DejaVu (lihat _pick_name_font) -- per
+    STRING, bukan per karakter, biar satu nama gak kecampur dua gaya
+    font yang beda."""
+    cp = ord(ch)
+    return (0x0000 <= cp <= 0x024F) or (0x2000 <= cp <= 0x206F) or (0x20A0 <= cp <= 0x20CF)
+
+
+def _dejavu_safe(ch: str) -> bool:
+    """True kalau karakter ini KEMUNGKINAN BESAR masih kerender sama
+    DejaVu (cakupannya luas: Latin, Cyrillic, Yunani, Armenia, Ibrani/
+    Arab dasar, simbol teknis, dst -- kira-kira semua yang KODEPOINnya
+    di bawah blok aksara CJK/Korea/Asia Tenggara). Dipake buat NYARING
+    (bukan render) -- karakter yang gagal cek ini di-skip total dari nama
+    (lihat _sanitize_name), soalnya DejaVu juga gak punya glyph-nya --
+    mending ilang rapi daripada kotak kosong."""
+    cp = ord(ch)
+    if 0x1F000 <= cp <= 0x1FFFF:  # blok emoji & simbol pictograf
+        return False
+    if 0x2E80 <= cp <= 0xD7FF:  # CJK, Hangul, Hiragana/Katakana, dst
+        return False
+    return True
+
+
+def _sanitize_name(name: str) -> str:
+    """Buang karakter yang bahkan DejaVu gak punya glyph-nya (CJK, emoji,
+    dst) -- daripada nampilin kotak kosong berantakan. Fallback ke
+    "Pengguna" kalau abis disaring nama-nya jadi kosong total."""
+    cleaned = "".join(ch for ch in name if ch.isspace() or _dejavu_safe(ch))
+    cleaned = " ".join(cleaned.split())  # rapihin spasi dobel bekas karakter yang kebuang
+    return cleaned or "Pengguna"
+
+
+def _pick_name_font(text: str, bold_size: int, bold: bool = True):
+    """Pilih Poppins ATAU DejaVu buat satu string NAMA, berdasarkan apa
+    semua karakternya lolos _poppins_safe. Dipake KHUSUS buat teks nama
+    (bukan label/angka lain yang udah pasti full-Latin dari kode kita
+    sendiri, gak perlu dicek)."""
+    if all(_poppins_safe(ch) for ch in text):
+        path = _SEMIBOLD if bold else _MEDIUM
+    else:
+        path = _DEJAVU_BOLD_ONLY if bold else _DEJAVU_REG_ONLY
+    return _f(path, bold_size)
+
 _font_cache: dict[tuple[str | None, int], ImageFont.FreeTypeFont] = {}
 
 
@@ -231,8 +298,9 @@ def _circle_avatar(img: Image.Image, avatar: Image.Image | None, initials: str,
             pass
     draw.ellipse([x, y, x + d, y + d], fill=(46, 36, 62))
     draw.ellipse([x - 4, y - 4, x + d + 3, y + d + 3], outline=ring_colour, width=4)
-    ini = (initials[:2] if len(initials) >= 2 else initials or "?").upper()
-    f = _f(_SEMIBOLD, int(d * 0.34))
+    safe_initials = _sanitize_name(initials)
+    ini = (safe_initials[:2] if len(safe_initials) >= 2 else safe_initials or "?").upper()
+    f = _pick_name_font(ini, int(d * 0.34), bold=True)
     fw = _tw(draw, ini, f)
     draw.text((x + (d - fw) // 2, y + (d - int(d * 0.4)) // 2), ini, font=f, fill=IVORY)
 
@@ -339,13 +407,12 @@ def _podium_card(
 
     draw = ImageDraw.Draw(img)
     name_size = 32 * S if rank == 0 else 24 * S
-    f_name = _f(_SEMIBOLD, name_size)
+    name = _sanitize_name(entry.get("display_name", "Unknown"))[:16]
+    f_name = _pick_name_font(name, name_size, bold=True)
     f_label = _f(_MEDIUM, 13 * S)
     amount_size = 36 * S if rank == 0 else 26 * S
     f_amount = _f(_BOLD, amount_size)
     f_orders = _f(_REG, 16 * S)
-
-    name = entry.get("display_name", "Unknown")[:16]
     name_y = badge_cy + (BADGE_D * S) // 2 + 18 * S
     nw = _tw(draw, name, f_name)
     draw.text((cx - nw // 2, name_y), name, font=f_name, fill=IVORY)
@@ -497,7 +564,6 @@ def generate_leaderboard_image(
 
     if rest:
         f_rank_list = _f(_SEMIBOLD, 22 * S)
-        f_name_list = _f(_SEMIBOLD, 24 * S)
         f_orders_list = _f(_REG, 16 * S)
         f_amount_list = _f(_BOLD, 24 * S)
 
@@ -523,7 +589,8 @@ def generate_leaderboard_image(
             draw = ImageDraw.Draw(img)
 
             text_x = av_x + avatar_d_list + 26 * S
-            name = entry.get("display_name", "Unknown")[:22]
+            name = _sanitize_name(entry.get("display_name", "Unknown"))[:22]
+            f_name_list = _pick_name_font(name, 24 * S, bold=True)
             draw.text((text_x, ry0 + 24 * S), name, font=f_name_list, fill=IVORY)
             orders = entry.get("total_orders", 0)
             ord_txt = f"{orders} order{'s' if orders != 1 else ''}"
