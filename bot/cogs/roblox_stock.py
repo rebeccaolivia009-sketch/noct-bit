@@ -43,23 +43,35 @@ RstockType = Literal["via_username", "via_login", "gamepass"]
 _TYPE_LABELS = {"via_username": "Via Username", "via_login": "Via Login", "gamepass": "Gamepass"}
 
 
-def _parse_custom_emoji(value: str | None) -> str | None:
-    """Validasi emoji -- terima emoji custom SERVER MANA PUN (format
-    <:nama:id> / <a:nama:id>) ATAU emoji unicode biasa. Return apa adanya
-    (disimpen sebagai string mentah, BUKAN di-convert ke PartialEmoji --
-    di sini cuma ditempel ke teks TextDisplay, bukan jadi emoji tombol).
-    None kalau kosong (caller pake default). Raise ValueError kalau
-    formatnya gak kebaca sama sekali."""
+def _parse_custom_emoji(bot: commands.Bot, value: str | None) -> str | None:
+    """Validasi emoji -- terima emoji custom SERVER MANA PUN yang BOT-nya
+    juga ada di situ (format <:nama:id> / <a:nama:id>) ATAU emoji unicode
+    biasa. Return apa adanya (disimpen sebagai string mentah, BUKAN
+    di-convert ke PartialEmoji -- di sini cuma ditempel ke teks
+    TextDisplay, bukan jadi emoji tombol). None kalau kosong (caller pake
+    default). Raise ValueError kalau formatnya gak kebaca ATAU emoji
+    custom-nya gak kekenal sama bot (ID udah gak valid/kehapus dari
+    server asalnya) -- ini yang nyegah kejadian kayak sebelumnya: staff
+    nyimpen emoji yang KELIATAN valid formatnya pas diketik, tapi
+    pas diposting ke channel beneran, Discord nampilin teks mentah
+    <a:nama:id> apa adanya soalnya emoji-nya udah gak ada/gak ke-resolve."""
     if not value or not value.strip():
         return None
     value = value.strip()
     try:
-        discord.PartialEmoji.from_str(value)  # validasi doang, hasilnya dibuang
+        parsed = discord.PartialEmoji.from_str(value)
     except Exception as exc:  # noqa: BLE001
         raise ValueError(
             f"Format emoji `{value}` gak kebaca. Pake emoji unicode biasa, atau emoji custom "
             "server (ketik `\\:namaemoji:` di chat dulu buat dapet kode aslinya, terus tempel di sini)."
         ) from exc
+
+    if parsed.id is not None and bot.get_emoji(parsed.id) is None:
+        raise ValueError(
+            f"Emoji `{value}` gak kekenal sama bot -- kemungkinan emoji-nya udah kehapus dari server "
+            "asalnya, atau ID-nya kecopy salah. Coba ketik ulang `\\:namaemoji:` di channel buat dapet "
+            "kode yang bener, terus tempel lagi."
+        )
     return value
 
 
@@ -194,11 +206,11 @@ class RobloxStockCog(commands.Cog):
     ) -> None:
         try:
             parsed = {
-                "rstock_emoji_title": _parse_custom_emoji(title),
-                "rstock_emoji_via_username": _parse_custom_emoji(via_username),
-                "rstock_emoji_via_login": _parse_custom_emoji(via_login),
-                "rstock_emoji_gamepass": _parse_custom_emoji(gamepass),
-                "rstock_emoji_footer": _parse_custom_emoji(footer),
+                "rstock_emoji_title": _parse_custom_emoji(self.bot, title),
+                "rstock_emoji_via_username": _parse_custom_emoji(self.bot, via_username),
+                "rstock_emoji_via_login": _parse_custom_emoji(self.bot, via_login),
+                "rstock_emoji_gamepass": _parse_custom_emoji(self.bot, gamepass),
+                "rstock_emoji_footer": _parse_custom_emoji(self.bot, footer),
             }
         except ValueError as exc:
             await interaction.response.send_message(embed=embeds.error_embed(str(exc)), ephemeral=True)
