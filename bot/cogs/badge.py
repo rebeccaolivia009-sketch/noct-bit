@@ -76,21 +76,22 @@ class BadgeCog(commands.Cog):
         )
 
     @badge_group.command(name="background", description="Atur gambar background leaderboard.")
-    @app_commands.describe(gambar="Gambar background leaderboard -- kosongin buat balik ke gradient default")
+    @app_commands.describe(
+        gambar_url=(
+            "URL gambar background -- HARUS udah di-hosting (imgur/postimages/dst), BUKAN link "
+            "upload attachment Discord (linknya kedaluwarsa, bikin background ilang sendiri belakangan). "
+            "Kosongin buat balik ke gradient default"
+        )
+    )
     @staff_only()
-    async def background(self, interaction: discord.Interaction, gambar: discord.Attachment | None = None) -> None:
-        if gambar is None:
+    async def background(self, interaction: discord.Interaction, gambar_url: str | None = None) -> None:
+        if gambar_url is None:
             await settings_q.set_setting(self.bot.db, "leaderboard_background_url", "")
             await interaction.response.send_message(
                 embed=embeds.success_embed("Background leaderboard dibalikin ke gradient default."), ephemeral=True
             )
             return
-        if not gambar.content_type or not gambar.content_type.startswith("image/"):
-            await interaction.response.send_message(
-                embed=embeds.error_embed("File yang dilampirin harus berupa gambar."), ephemeral=True
-            )
-            return
-        await settings_q.set_setting(self.bot.db, "leaderboard_background_url", gambar.url)
+        await settings_q.set_setting(self.bot.db, "leaderboard_background_url", gambar_url)
         await interaction.response.send_message(
             embed=embeds.success_embed(
                 "Background leaderboard berhasil diatur. Bakal kepake pas leaderboard di-refresh berikutnya."
@@ -102,8 +103,14 @@ class BadgeCog(commands.Cog):
     @app_commands.describe(
         title="Judul panel",
         description="Isi teks panel",
-        thumbnail="Gambar kecil di samping judul (opsional)",
-        banner="Gambar full-width di bawah teks (opsional)",
+        thumbnail_url=(
+            "URL gambar kecil di samping judul (opsional) -- HARUS udah di-hosting "
+            "(imgur/postimages/dst), BUKAN link upload attachment Discord (linknya kedaluwarsa)"
+        ),
+        banner_url=(
+            "URL gambar full-width di bawah teks (opsional) -- HARUS udah di-hosting, "
+            "BUKAN link upload attachment Discord"
+        ),
         emoji_atur="Emoji tombol Atur Badge -- boleh emoji custom server (opsional)",
         emoji_hapus="Emoji tombol Hapus Badge -- boleh emoji custom server (opsional)",
     )
@@ -115,20 +122,11 @@ class BadgeCog(commands.Cog):
         description: str = (
             "Kamu lagi di TOP 3 Top Spenders? Atur badge custom kamu sendiri di sini."
         ),
-        thumbnail: discord.Attachment | None = None,
-        banner: discord.Attachment | None = None,
+        thumbnail_url: str | None = None,
+        banner_url: str | None = None,
         emoji_atur: str | None = None,
         emoji_hapus: str | None = None,
     ) -> None:
-        for attachment, label in ((thumbnail, "Thumbnail"), (banner, "Banner")):
-            if attachment is not None and (
-                not attachment.content_type or not attachment.content_type.startswith("image/")
-            ):
-                await interaction.response.send_message(
-                    embed=embeds.error_embed(f"{label} harus berupa gambar."), ephemeral=True
-                )
-                return
-
         try:
             parsed_emoji_atur = _parse_custom_emoji(emoji_atur)
             parsed_emoji_hapus = _parse_custom_emoji(emoji_hapus)
@@ -137,10 +135,10 @@ class BadgeCog(commands.Cog):
             return
 
         view_kwargs: dict = {"title": title, "description": description}
-        if thumbnail is not None:
-            view_kwargs["thumbnail_url"] = thumbnail.url
-        if banner is not None:
-            view_kwargs["banner_url"] = banner.url
+        if thumbnail_url is not None:
+            view_kwargs["thumbnail_url"] = thumbnail_url
+        if banner_url is not None:
+            view_kwargs["banner_url"] = banner_url
         if parsed_emoji_atur is not None:
             view_kwargs["emoji_set"] = parsed_emoji_atur
         if parsed_emoji_hapus is not None:
