@@ -173,6 +173,8 @@ class Database:
             ("payment_methods", "emoji", "ALTER TABLE payment_methods ADD COLUMN emoji TEXT"),
             ("shipment_proofs", "category", "ALTER TABLE shipment_proofs ADD COLUMN category TEXT NOT NULL DEFAULT ''"),
             ("shipment_proofs", "product", "ALTER TABLE shipment_proofs ADD COLUMN product TEXT NOT NULL DEFAULT ''"),
+            ("panel_reply_buttons", "image_url", "ALTER TABLE panel_reply_buttons ADD COLUMN image_url TEXT"),
+            ("panel_reply_buttons", "thumbnail_url", "ALTER TABLE panel_reply_buttons ADD COLUMN thumbnail_url TEXT"),
         ]
         for table, column, ddl in migrations:
             cursor = await self.conn.execute(f"PRAGMA table_info({table})")

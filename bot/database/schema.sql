@@ -151,10 +151,12 @@ CREATE TABLE IF NOT EXISTS settings (
 -- dipanggil balik pas diklik, bahkan abis bot restart (custom_id-nya cuma
 -- nyimpen ID row ini, bukan teksnya langsung).
 CREATE TABLE IF NOT EXISTS panel_reply_buttons (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    label       TEXT NOT NULL,
-    reply_text  TEXT NOT NULL,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    label          TEXT NOT NULL,
+    reply_text     TEXT NOT NULL,
+    image_url      TEXT,
+    thumbnail_url  TEXT,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Kartu digital NOCTRA -- saldo Credit (dari deposit customer, dipake
