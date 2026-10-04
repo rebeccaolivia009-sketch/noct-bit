@@ -92,7 +92,13 @@ class _TwoFieldModal(discord.ui.Modal):
 
 class _ThreeFieldModal(discord.ui.Modal):
     """Modal tiga TextInput -- dipake buat Add Link Button dan Add Reply
-    Button (label + emoji opsional + url/isi balasan)."""
+    Button (label + emoji opsional + url/isi balasan).
+
+    `max2` (field emoji) defaultnya 100 -- SEBELUMNYA 20, yang kepotong
+    buat emoji custom server kayak <a:nama_panjang:1234567890123456789>
+    (gampang 35-45 karakter), jadi emoji custom gak pernah bisa keisi
+    penuh biarpun formatnya valid. Emoji unicode biasa (1-4 karakter)
+    tetep muat jauh di bawah batas baru ini."""
 
     def __init__(
         self,
@@ -102,7 +108,7 @@ class _ThreeFieldModal(discord.ui.Modal):
         label3: str,
         *,
         max1: int = 80,
-        max2: int = 20,
+        max2: int = 100,
         max3: int = 500,
         style3: discord.TextStyle = discord.TextStyle.short,
         placeholder3: str | None = None,
@@ -130,11 +136,68 @@ class _ThreeFieldModal(discord.ui.Modal):
         )
 
 
+class _ReplyButtonModal(discord.ui.Modal):
+    """5 TextInput -- label, emoji (opsional), isi balasan, URL banner
+    (opsional), URL thumbnail (opsional). Dipake Add Reply Button DAN
+    Edit Reply Button, beda cuma di nilai default tiap field (Add =
+    semua kosong, Edit = diisi dari row DB yang ada). 5 field itu PAS
+    batas maksimal Discord buat satu modal, gak bisa nambah lagi."""
+
+    def __init__(
+        self,
+        title: str,
+        *,
+        default_label: str = "",
+        default_emoji: str = "",
+        default_reply_text: str = "",
+        default_image_url: str = "",
+        default_thumbnail_url: str = "",
+        on_submit_callback: Callable[[discord.Interaction, str, str, str, str, str], Awaitable[None]],
+    ) -> None:
+        super().__init__(title=title[:45])
+        self.label_input = discord.ui.TextInput(
+            label="Label tombol", max_length=80, default=default_label or None,
+        )
+        self.emoji_input = discord.ui.TextInput(
+            label="Emoji (opsional)", max_length=100, required=False,
+            default=default_emoji or None, placeholder="Kosongin kalau gak perlu",
+        )
+        self.reply_text_input = discord.ui.TextInput(
+            label="Pesan yang muncul pas diklik", style=discord.TextStyle.paragraph, max_length=1000,
+            default=default_reply_text or None,
+        )
+        self.image_input = discord.ui.TextInput(
+            label="URL banner (opsional)", required=False, max_length=500,
+            default=default_image_url or None, placeholder="https://...",
+        )
+        self.thumbnail_input = discord.ui.TextInput(
+            label="URL thumbnail (opsional)", required=False, max_length=500,
+            default=default_thumbnail_url or None, placeholder="https://...",
+        )
+        for item in (
+            self.label_input, self.emoji_input, self.reply_text_input, self.image_input, self.thumbnail_input,
+        ):
+            self.add_item(item)
+        self._on_submit_callback = on_submit_callback
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self._on_submit_callback(
+            interaction,
+            str(self.label_input.value).strip(),
+            str(self.emoji_input.value or "").strip(),
+            str(self.reply_text_input.value).strip(),
+            str(self.image_input.value or "").strip(),
+            str(self.thumbnail_input.value or "").strip(),
+        )
+
+
 class ManageButtonsView(discord.ui.View):
     """Ngambil alih PESAN PANEL YANG SAMA sementara (bukan buka pesan
-    ephemeral baru) -- biar hapus tombol tetep bisa lewat
+    ephemeral baru) -- biar hapus/edit tombol tetep bisa lewat
     interaction.response.edit_message() yang valid, terus balik lagi ke
-    tampilan builder normal abis selesai."""
+    tampilan builder normal abis selesai. Milih satu tombol di sini CUMA
+    nentuin tombol mana -- keputusan Edit atau Hapus-nya ada di
+    ButtonActionView abis milih (lihat di bawah)."""
 
     def __init__(self, builder: "BaseDraftBuilderView") -> None:
         super().__init__(timeout=300)
@@ -147,7 +210,7 @@ class ManageButtonsView(discord.ui.View):
             )
             for i, b in enumerate(builder.draft.buttons)
         ]
-        select = discord.ui.Select(placeholder="Pilih tombol buat dihapus...", options=options, row=0)
+        select = discord.ui.Select(placeholder="Pilih tombol buat diedit/dihapus...", options=options, row=0)
         select.callback = self._on_select
         self.add_item(select)
 
@@ -158,9 +221,170 @@ class ManageButtonsView(discord.ui.View):
     async def _on_select(self, interaction: discord.Interaction) -> None:
         select = self.children[0]
         idx = int(select.values[0])  # type: ignore[attr-defined]
-        self.builder._snapshot()
-        self.builder.draft.buttons.pop(idx)
+        await interaction.response.edit_message(view=ButtonActionView(self.builder, idx))
+
+    async def _on_back(self, interaction: discord.Interaction) -> None:
         await self.builder._after_edit(interaction)
+
+
+class ButtonActionView(discord.ui.View):
+    """Muncul abis staff milih SATU tombol di ManageButtonsView -- nawarin
+    Edit atau Hapus buat tombol itu doang. Edit tombol LINK pake
+    _ThreeFieldModal yang sama kayak Add Link Button (field-nya di-prefill
+    nilai sekarang); edit tombol BALASAN pake _ReplyButtonModal (5 field,
+    termasuk banner & thumbnail) dan nge-UPDATE row panel_reply_buttons
+    yang udah ada (bukan bikin row baru), jadi button_id-nya (makanya
+    custom_id tombol di pesan) tetep sama."""
+
+    def __init__(self, builder: "BaseDraftBuilderView", index: int) -> None:
+        super().__init__(timeout=300)
+        self.builder = builder
+        self.index = index
+
+        edit_btn = discord.ui.Button(label="Edit", style=discord.ButtonStyle.primary, row=0)
+        edit_btn.callback = self._on_edit
+        self.add_item(edit_btn)
+
+        delete_btn = discord.ui.Button(label="Hapus", style=discord.ButtonStyle.danger, row=0)
+        delete_btn.callback = self._on_delete
+        self.add_item(delete_btn)
+
+        back_btn = discord.ui.Button(label="Kembali ke Daftar", style=discord.ButtonStyle.secondary, row=0)
+        back_btn.callback = self._on_back
+        self.add_item(back_btn)
+
+    async def _on_delete(self, interaction: discord.Interaction) -> None:
+        self.builder._snapshot()
+        self.builder.draft.buttons.pop(self.index)
+        await self.builder._after_edit(interaction)
+
+    async def _on_back(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(view=ManageButtonsView(self.builder))
+
+    async def _on_edit(self, interaction: discord.Interaction) -> None:
+        spec = self.builder.draft.buttons[self.index]
+
+        if spec.is_link:
+            async def on_submit(inter: discord.Interaction, label: str, emoji: str, url: str) -> None:
+                if not url.startswith(("http://", "https://")):
+                    await inter.response.send_message(
+                        embed=embeds.error_embed("URL harus mulai dari http:// atau https://"), ephemeral=True
+                    )
+                    return
+                if emoji and not is_valid_emoji(emoji):
+                    await inter.response.send_message(embed=embeds.error_embed("Emoji-nya gak valid."), ephemeral=True)
+                    return
+                self.builder._snapshot()
+                self.builder.draft.buttons[self.index] = ButtonSpec(
+                    label=label or "Klik di sini", emoji=emoji or None, url=url
+                )
+                await self.builder._after_edit(inter)
+                await inter.followup.send(embed=embeds.success_embed("Tombol link diupdate."), ephemeral=True)
+
+            modal = _ThreeFieldModal(
+                "Edit Tombol Link", "Label tombol", "Emoji (opsional)", "URL",
+                placeholder3="https://...", on_submit_callback=on_submit,
+            )
+            modal.field1.default = spec.label
+            modal.field2.default = spec.emoji or None
+            modal.field3.default = spec.url or None
+            await interaction.response.send_modal(modal)
+            return
+
+        # Tombol BALASAN -- tarik dulu reply_text/banner/thumbnail yang
+        # sekarang dari DB (gak kesimpen di ButtonSpec/draft, cuma label +
+        # emoji + button_id yang ada di situ) buat ngisi default modal.
+        db = interaction.client.db  # type: ignore[attr-defined]
+        row = await panel_buttons_q.get_reply_button(db, spec.reply_button_id)
+        current_reply_text = row["reply_text"] if row else ""
+        current_image = row["image_url"] if row and "image_url" in row.keys() and row["image_url"] else ""
+        current_thumb = row["thumbnail_url"] if row and "thumbnail_url" in row.keys() and row["thumbnail_url"] else ""
+
+        async def on_submit(
+            inter: discord.Interaction, label: str, emoji: str, reply_text: str, image_url: str, thumbnail_url: str
+        ) -> None:
+            if not reply_text:
+                await inter.response.send_message(embed=embeds.error_embed("Isi balasannya gak boleh kosong."), ephemeral=True)
+                return
+            if emoji and not is_valid_emoji(emoji):
+                await inter.response.send_message(embed=embeds.error_embed("Emoji-nya gak valid."), ephemeral=True)
+                return
+            label = label or "Klik di sini"
+            await panel_buttons_q.update_reply_button(
+                inter.client.db,  # type: ignore[attr-defined]
+                spec.reply_button_id,
+                label=label, reply_text=reply_text,
+                image_url=image_url or None, thumbnail_url=thumbnail_url or None,
+            )
+            self.builder._snapshot()
+            self.builder.draft.buttons[self.index] = ButtonSpec(
+                label=label, emoji=emoji or None, reply_button_id=spec.reply_button_id
+            )
+            await self.builder._after_edit(inter)
+            await inter.followup.send(embed=embeds.success_embed("Tombol balasan diupdate."), ephemeral=True)
+
+        modal = _ReplyButtonModal(
+            "Edit Tombol Balasan",
+            default_label=spec.label, default_emoji=spec.emoji or "",
+            default_reply_text=current_reply_text, default_image_url=current_image,
+            default_thumbnail_url=current_thumb,
+            on_submit_callback=on_submit,
+        )
+        await interaction.response.send_modal(modal)
+
+
+class ManageLinesView(discord.ui.View):
+    """Sama pola kayak ManageButtonsView -- ngambil alih pesan panel yang
+    sama sementara, biar staff bisa pilih SATU baris teks (TextBlock,
+    SeparatorBlock gak ikut kehitung) buat diedit atau dihapus, terus
+    balik ke tampilan builder normal abis selesai."""
+
+    def __init__(self, builder: "BaseDraftBuilderView") -> None:
+        super().__init__(timeout=300)
+        self.builder = builder
+        # Simpen index ASLI di draft.blocks (bukan cuma nomor urutan baris
+        # teks) -- soalnya ada SeparatorBlock yang kesisip di antaranya,
+        # jadi "baris ke-3" belum tentu draft.blocks[2].
+        self.text_block_indices = [
+            i for i, b in enumerate(builder.draft.blocks) if isinstance(b, TextBlock)
+        ]
+        options = [
+            discord.SelectOption(
+                label=f"Baris {n + 1}: {builder.draft.blocks[i].content[:80]}",
+                value=str(i),
+            )
+            for n, i in enumerate(self.text_block_indices)
+        ]
+        select = discord.ui.Select(placeholder="Pilih baris buat diedit/dihapus...", options=options[:25], row=0)
+        select.callback = self._on_select
+        self.add_item(select)
+
+        back_button = discord.ui.Button(label="Kembali", style=discord.ButtonStyle.secondary, row=1)
+        back_button.callback = self._on_back
+        self.add_item(back_button)
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        select = [c for c in self.children if isinstance(c, discord.ui.Select)][0]
+        block_index = int(select.values[0])  # type: ignore[attr-defined]
+        current_block = self.builder.draft.blocks[block_index]
+
+        async def on_submit(inter: discord.Interaction, value: str) -> None:
+            self.builder._snapshot()
+            if value:
+                self.builder.draft.blocks[block_index] = TextBlock(value)
+            else:
+                self.builder.draft.blocks.pop(block_index)
+            self.builder._build_separator_select()
+            await self.builder._after_edit(inter)
+            await inter.followup.send(
+                embed=embeds.success_embed("Baris diupdate." if value else "Baris dihapus."), ephemeral=True
+            )
+
+        modal = _SingleFieldModal(
+            "Edit Baris", "Teks (kosongin buat hapus baris ini)", style=discord.TextStyle.paragraph,
+            max_length=1000, default=current_block.content, required=False, on_submit_callback=on_submit,
+        )
+        await interaction.response.send_modal(modal)
 
     async def _on_back(self, interaction: discord.Interaction) -> None:
         await self.builder._after_edit(interaction)
@@ -276,6 +500,15 @@ class BaseDraftBuilderView(discord.ui.View):
             on_submit_callback=on_submit,
         )
         await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Edit Line", style=discord.ButtonStyle.secondary, row=0)
+    async def edit_line_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not any(isinstance(b, TextBlock) for b in self.draft.blocks):
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Belum ada baris yang bisa diedit."), ephemeral=True
+            )
+            return
+        await interaction.response.edit_message(view=ManageLinesView(self))
 
     # -- Thumbnail / Banner -------------------------------------------------
 
@@ -412,7 +645,9 @@ class BaseDraftBuilderView(discord.ui.View):
             )
             return
 
-        async def on_submit(inter: discord.Interaction, label: str, emoji: str, reply_text: str) -> None:
+        async def on_submit(
+            inter: discord.Interaction, label: str, emoji: str, reply_text: str, image_url: str, thumbnail_url: str
+        ) -> None:
             if not reply_text:
                 await inter.response.send_message(embed=embeds.error_embed("Isi balasannya gak boleh kosong."), ephemeral=True)
                 return
@@ -421,16 +656,15 @@ class BaseDraftBuilderView(discord.ui.View):
                 return
             db = inter.client.db  # type: ignore[attr-defined]
             label = label or "Klik di sini"
-            button_id = await panel_buttons_q.create_reply_button(db, label, reply_text)
+            button_id = await panel_buttons_q.create_reply_button(
+                db, label, reply_text, image_url=image_url or None, thumbnail_url=thumbnail_url or None
+            )
             self._snapshot()
             self.draft.buttons.append(ButtonSpec(label=label, emoji=emoji or None, reply_button_id=button_id))
             await self._after_edit(inter)
             await inter.followup.send(embed=embeds.success_embed(f"Tombol balasan **{label}** ditambahin."), ephemeral=True)
 
-        modal = _ThreeFieldModal(
-            "Tambah Tombol Balasan", "Label tombol", "Emoji (opsional)", "Pesan yang muncul pas diklik",
-            max3=1000, style3=discord.TextStyle.paragraph, on_submit_callback=on_submit,
-        )
+        modal = _ReplyButtonModal("Tambah Tombol Balasan", on_submit_callback=on_submit)
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(label="Manage Buttons", style=discord.ButtonStyle.secondary, row=4)

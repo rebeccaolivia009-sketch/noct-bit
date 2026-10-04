@@ -44,6 +44,14 @@ class PanelReplyButton(
                 embed=embeds.error_embed("Tombol ini udah gak valid -- mungkin data lamanya kehapus."), ephemeral=True
             )
             return
-        await interaction.response.send_message(
-            embed=embeds.info_embed(row["label"], row["reply_text"]), ephemeral=True
-        )
+
+        embed = embeds.info_embed(row["label"], row["reply_text"])
+        # image_url/thumbnail_url BOLEH gak ada di row kalau ini database
+        # lama yang baru ke-migrasi (kolomnya ke-tambah tapi datanya belum
+        # diisi) -- .keys() dicek dulu biar gak KeyError di row aiosqlite.
+        if "image_url" in row.keys() and row["image_url"]:
+            embed.set_image(url=row["image_url"])
+        if "thumbnail_url" in row.keys() and row["thumbnail_url"]:
+            embed.set_thumbnail(url=row["thumbnail_url"])
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
