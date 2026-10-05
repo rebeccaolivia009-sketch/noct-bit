@@ -418,6 +418,24 @@ class BaseDraftBuilderView(discord.ui.View):
         select = discord.ui.Select(placeholder="Sisipin garis pemisah...", options=options[:25], row=3)
         select.callback = self._on_separator_select
         self.add_item(select)
+        # Method ini dipanggil tiap draft diganti total (init, Undo, Reset,
+        # load draft lama) -- sekalian sinkronin label tombol toggle biar
+        # selalu nunjukin state draft yang lagi aktif.
+        self._sync_toggle_labels()
+
+    def _sync_toggle_labels(self) -> None:
+        """Samain label/warna tombol toggle tata letak dengan state draft."""
+        draft = self.draft
+        self.banner_position_button.label = "Banner: Atas" if draft.banner_position == "top" else "Banner: Bawah"
+        self.thumbnail_position_button.label = (
+            "Thumb: Deskripsi" if draft.thumbnail_position == "description" else "Thumb: Judul"
+        )
+        self.separator_toggle_button.label = (
+            "Pemisah Judul: On" if draft.title_description_separator else "Pemisah Judul: Off"
+        )
+        self.separator_toggle_button.style = (
+            discord.ButtonStyle.success if draft.title_description_separator else discord.ButtonStyle.secondary
+        )
 
     async def _after_edit(self, interaction: discord.Interaction) -> None:
         """Dipanggil abis draft berubah, dari action manapun (klik tombol
@@ -543,6 +561,29 @@ class BaseDraftBuilderView(discord.ui.View):
             required=False, placeholder="https://...", on_submit_callback=on_submit,
         )
         await interaction.response.send_modal(modal)
+
+    # -- Toggle tata letak (row 1, di sebelah Banner) ----------------------
+
+    @discord.ui.button(label="Banner: Atas", style=discord.ButtonStyle.secondary, row=1)
+    async def banner_position_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self._snapshot()
+        self.draft.banner_position = "bottom" if self.draft.banner_position == "top" else "top"
+        self._sync_toggle_labels()
+        await self._after_edit(interaction)
+
+    @discord.ui.button(label="Thumb: Deskripsi", style=discord.ButtonStyle.secondary, row=1)
+    async def thumbnail_position_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self._snapshot()
+        self.draft.thumbnail_position = "title" if self.draft.thumbnail_position == "description" else "description"
+        self._sync_toggle_labels()
+        await self._after_edit(interaction)
+
+    @discord.ui.button(label="Pemisah Judul: Off", style=discord.ButtonStyle.secondary, row=1)
+    async def separator_toggle_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self._snapshot()
+        self.draft.title_description_separator = not self.draft.title_description_separator
+        self._sync_toggle_labels()
+        await self._after_edit(interaction)
 
     # -- Color / Undo / Reset / Add Link -------------------------------------
 
