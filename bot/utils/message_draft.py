@@ -145,29 +145,26 @@ def _group_blocks(blocks: list[Block]) -> list[list[TextBlock]]:
 
 
 def render_draft_container(draft: MessageDraft) -> discord.ui.Container:
+    """Tata letak: banner (kalau ada) PALING ATAS, duluan dari apapun --
+    beda dari versi sebelumnya yang nempel di paling bawah. Thumbnail
+    (kalau ada) PALING BAWAH, nempel di KANAN baris teks terakhir lewat
+    discord.ui.Section (accessory Section emang selalu kerender di sisi
+    kanan teksnya) -- sebelumnya malah nempel di ATAS sejajar judul."""
+    children: list = []
+
+    if draft.banner_url:
+        children.append(discord.ui.MediaGallery(discord.MediaGalleryItem(media=draft.banner_url)))
+        children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
     head_lines: list[str] = []
     if draft.title:
         head_lines.append(f"## {draft.title}")
     if draft.description:
         head_lines.append(draft.description)
+    if head_lines:
+        children.append(discord.ui.TextDisplay("\n".join(head_lines)))
 
     groups = _group_blocks(draft.blocks)
-    children: list = []
-
-    if head_lines:
-        head_text = discord.ui.TextDisplay("\n".join(head_lines))
-        if draft.thumbnail_url:
-            children.append(discord.ui.Section(head_text, accessory=discord.ui.Thumbnail(media=draft.thumbnail_url)))
-        else:
-            children.append(head_text)
-    elif draft.thumbnail_url:
-        # Thumbnail doang tanpa title/description -- Section butuh minimal
-        # satu TextDisplay, jadi kasih placeholder tak-terlihat (zero-width
-        # space) biar strukturnya tetep valid.
-        children.append(
-            discord.ui.Section(discord.ui.TextDisplay("\u200b"), accessory=discord.ui.Thumbnail(media=draft.thumbnail_url))
-        )
-
     first_group = groups[0]
     if first_group:
         children.append(discord.ui.TextDisplay("\n".join(b.content for b in first_group)))
@@ -177,10 +174,23 @@ def render_draft_container(draft: MessageDraft) -> discord.ui.Container:
         if group:
             children.append(discord.ui.TextDisplay("\n".join(b.content for b in group)))
 
-    if draft.banner_url:
-        if children:
-            children.append(discord.ui.Separator(visible=False))
-        children.append(discord.ui.MediaGallery(discord.MediaGalleryItem(media=draft.banner_url)))
+    if draft.thumbnail_url:
+        if children and isinstance(children[-1], discord.ui.TextDisplay):
+            # Tempelin ke TextDisplay TERAKHIR yang udah ke-build di atas
+            # (judul/deskripsi ATAU baris teks terakhir, mana aja yang
+            # paling akhir) -- di-pop dulu dari list biasa, aman soalnya
+            # belum beneran ke-attach ke Container manapun sampe baris
+            # `return` di bawah.
+            last_text = children.pop()
+            children.append(discord.ui.Section(last_text, accessory=discord.ui.Thumbnail(media=draft.thumbnail_url)))
+        else:
+            # Gak ada TextDisplay sama sekali buat ditempelin (misal cuma
+            # banner doang, atau draft kosong total) -- Section tetep
+            # butuh minimal satu TextDisplay, jadi kasih placeholder
+            # tak-terlihat (zero-width space) biar strukturnya valid.
+            children.append(
+                discord.ui.Section(discord.ui.TextDisplay("\u200b"), accessory=discord.ui.Thumbnail(media=draft.thumbnail_url))
+            )
 
     if not children:
         children.append(discord.ui.TextDisplay(PLACEHOLDER_TEXT))
