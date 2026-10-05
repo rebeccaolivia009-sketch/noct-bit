@@ -17,6 +17,11 @@ from bot.core.theme import COLOR_PRIMARY
 
 PLACEHOLDER_TEXT = "*(Belum ada konten -- pake tombol di bawah buat mulai nambahin.)*"
 
+# Nilai valid buat posisi banner & thumbnail -- dipake draft_from_dict() buat
+# nolak nilai nyasar dari JSON lama/rusak (fallback ke default).
+BANNER_POSITIONS = ("top", "bottom")
+THUMBNAIL_POSITIONS = ("title", "description")
+
 
 @dataclass
 class TextBlock:
@@ -53,13 +58,28 @@ class ButtonSpec:
 class MessageDraft:
     """State kerja satu pesan yang lagi dibangun. Semuanya optional/kosong
     di awal -- draft kosong dirender sebagai placeholder biar Container-nya
-    gak pernah beneran kosong (Discord nolak Container tanpa isi)."""
+    gak pernah beneran kosong (Discord nolak Container tanpa isi).
+
+    Tata letak FLEKSIBEL, diatur staff lewat tombol toggle di builder
+    (lihat bot.ui.draft_builder_base):
+      * `banner_position`: "top" (default, di atas semua konten) atau
+        "bottom" (di bawah semua konten teks, sebelum tombol).
+      * `thumbnail_position`: "description" (default, sejajar di kanan
+        deskripsi) atau "title" (sejajar di kanan judul). Kalau elemen
+        yang dipilih gak ada isinya, thumbnail otomatis pindah ke elemen
+        teks terdekat biar tetep kerender.
+      * `title_description_separator`: True = ada garis pemisah antara
+        judul & deskripsi (cuma muncul kalau dua-duanya keisi). Default
+        off (nyambung)."""
 
     title: str | None = None
     description: str | None = None
+    title_description_separator: bool = False
     blocks: list[Block] = field(default_factory=list)  # hasil "Add Line" + "Insert separator"
     thumbnail_url: str | None = None
+    thumbnail_position: str = "description"  # "title" | "description"
     banner_url: str | None = None
+    banner_position: str = "top"  # "top" | "bottom"
     color: int = COLOR_PRIMARY
     buttons: list[ButtonSpec] = field(default_factory=list)
 
@@ -69,12 +89,15 @@ class MessageDraft:
         return MessageDraft(
             title=self.title,
             description=self.description,
+            title_description_separator=self.title_description_separator,
             blocks=[
                 TextBlock(b.content) if isinstance(b, TextBlock) else SeparatorBlock()
                 for b in self.blocks
             ],
             thumbnail_url=self.thumbnail_url,
+            thumbnail_position=self.thumbnail_position,
             banner_url=self.banner_url,
+            banner_position=self.banner_position,
             color=self.color,
             buttons=[ButtonSpec(b.label, b.emoji, b.url, b.reply_button_id) for b in self.buttons],
         )
@@ -90,12 +113,15 @@ def draft_to_dict(draft: MessageDraft) -> dict:
     return {
         "title": draft.title,
         "description": draft.description,
+        "title_description_separator": draft.title_description_separator,
         "blocks": [
             {"type": "text", "content": b.content} if isinstance(b, TextBlock) else {"type": "separator"}
             for b in draft.blocks
         ],
         "thumbnail_url": draft.thumbnail_url,
+        "thumbnail_position": draft.thumbnail_position,
         "banner_url": draft.banner_url,
+        "banner_position": draft.banner_position,
         "color": draft.color,
         "buttons": [
             {"label": b.label, "emoji": b.emoji, "url": b.url, "reply_button_id": b.reply_button_id}
@@ -120,12 +146,24 @@ def draft_from_dict(data: dict) -> MessageDraft:
         )
         for b in data.get("buttons", [])
     ]
+    # Draft lama (sebelum fitur tata letak fleksibel) gak punya tiga field
+    # ini -- jatuh ke default. Nilai di luar daftar valid juga di-default-in.
+    banner_position = data.get("banner_position", "top")
+    if banner_position not in BANNER_POSITIONS:
+        banner_position = "top"
+    thumbnail_position = data.get("thumbnail_position", "description")
+    if thumbnail_position not in THUMBNAIL_POSITIONS:
+        thumbnail_position = "description"
+
     return MessageDraft(
         title=data.get("title"),
         description=data.get("description"),
+        title_description_separator=bool(data.get("title_description_separator", False)),
         blocks=blocks,
         thumbnail_url=data.get("thumbnail_url"),
+        thumbnail_position=thumbnail_position,
         banner_url=data.get("banner_url"),
+        banner_position=banner_position,
         color=data.get("color", COLOR_PRIMARY),
         buttons=buttons,
     )
@@ -145,52 +183,83 @@ def _group_blocks(blocks: list[Block]) -> list[list[TextBlock]]:
 
 
 def render_draft_container(draft: MessageDraft) -> discord.ui.Container:
-    """Tata letak: banner (kalau ada) PALING ATAS, duluan dari apapun --
-    beda dari versi sebelumnya yang nempel di paling bawah. Thumbnail
-    (kalau ada) PALING BAWAH, nempel di KANAN baris teks terakhir lewat
-    discord.ui.Section (accessory Section emang selalu kerender di sisi
-    kanan teksnya) -- sebelumnya malah nempel di ATAS sejajar judul."""
-    children: list = []
+    """Tata letak (urutan dari atas ke bawah):
 
-    if draft.banner_url:
-        children.append(discord.ui.MediaGallery(discord.MediaGalleryItem(media=draft.banner_url)))
-        children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+      [banner kalau position="top"] -> judul -> [pemisah judul/deskripsi
+      kalau toggle on] -> deskripsi -> baris teks (dipisah separator) ->
+      [banner kalau position="bottom"].
 
-    head_lines: list[str] = []
+    Thumbnail nempel di KANAN teks lewat discord.ui.Section (accessory
+    Section emang selalu kerender di sisi kanan teksnya): di deskripsi
+    kalau thumbnail_position="description" (default), di judul kalau
+    "title". Kalau elemen targetnya kosong, thumbnail pindah ke elemen
+    teks terdekat (judul/deskripsi yang satunya, terus baris teks
+    pertama) -- Section butuh minimal satu TextDisplay."""
+    # 1) Susun dulu urutan konten teks sebagai daftar (jenis, teks) --
+    # "sep" = separator. Dipisah dari proses bikin komponen biar gampang
+    # nentuin entry mana yang kebagian thumbnail.
+    entries: list[tuple[str, str | None]] = []
     if draft.title:
-        head_lines.append(f"## {draft.title}")
+        entries.append(("title", f"## {draft.title}"))
     if draft.description:
-        head_lines.append(draft.description)
-    if head_lines:
-        children.append(discord.ui.TextDisplay("\n".join(head_lines)))
+        if draft.title and draft.title_description_separator:
+            entries.append(("sep", None))
+        entries.append(("desc", draft.description))
 
     groups = _group_blocks(draft.blocks)
-    first_group = groups[0]
-    if first_group:
-        children.append(discord.ui.TextDisplay("\n".join(b.content for b in first_group)))
-
+    if groups[0]:
+        entries.append(("body", "\n".join(b.content for b in groups[0])))
     for group in groups[1:]:
-        children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+        entries.append(("sep", None))
         if group:
-            children.append(discord.ui.TextDisplay("\n".join(b.content for b in group)))
+            entries.append(("body", "\n".join(b.content for b in group)))
 
+    # 2) Tentuin entry yang kebagian thumbnail (urutan prioritas ngikutin
+    # thumbnail_position, terus fallback ke baris teks pertama).
+    thumb_index: int | None = None
     if draft.thumbnail_url:
-        if children and isinstance(children[-1], discord.ui.TextDisplay):
-            # Tempelin ke TextDisplay TERAKHIR yang udah ke-build di atas
-            # (judul/deskripsi ATAU baris teks terakhir, mana aja yang
-            # paling akhir) -- di-pop dulu dari list biasa, aman soalnya
-            # belum beneran ke-attach ke Container manapun sampe baris
-            # `return` di bawah.
-            last_text = children.pop()
-            children.append(discord.ui.Section(last_text, accessory=discord.ui.Thumbnail(media=draft.thumbnail_url)))
+        preferred = ("desc", "title") if draft.thumbnail_position == "description" else ("title", "desc")
+        for kind in (*preferred, "body"):
+            thumb_index = next((i for i, (k, _) in enumerate(entries) if k == kind), None)
+            if thumb_index is not None:
+                break
+
+    def _separator() -> discord.ui.Separator:
+        return discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small)
+
+    def _thumbnail() -> discord.ui.Thumbnail:
+        return discord.ui.Thumbnail(media=draft.thumbnail_url)
+
+    children: list = []
+    banner = (
+        discord.ui.MediaGallery(discord.MediaGalleryItem(media=draft.banner_url)) if draft.banner_url else None
+    )
+    has_body = bool(entries) or bool(draft.thumbnail_url)
+
+    if banner is not None and draft.banner_position != "bottom":
+        children.append(banner)
+        if has_body:
+            children.append(_separator())
+
+    for i, (kind, text) in enumerate(entries):
+        if kind == "sep":
+            children.append(_separator())
+        elif i == thumb_index:
+            children.append(discord.ui.Section(discord.ui.TextDisplay(text), accessory=_thumbnail()))
         else:
-            # Gak ada TextDisplay sama sekali buat ditempelin (misal cuma
-            # banner doang, atau draft kosong total) -- Section tetep
-            # butuh minimal satu TextDisplay, jadi kasih placeholder
-            # tak-terlihat (zero-width space) biar strukturnya valid.
-            children.append(
-                discord.ui.Section(discord.ui.TextDisplay("\u200b"), accessory=discord.ui.Thumbnail(media=draft.thumbnail_url))
-            )
+            children.append(discord.ui.TextDisplay(text))
+
+    if draft.thumbnail_url and thumb_index is None:
+        # Gak ada teks sama sekali buat ditempelin (misal cuma banner +
+        # thumbnail, atau draft kosong) -- Section tetep butuh satu
+        # TextDisplay, jadi kasih placeholder tak-terlihat (zero-width
+        # space) biar strukturnya valid.
+        children.append(discord.ui.Section(discord.ui.TextDisplay("\u200b"), accessory=_thumbnail()))
+
+    if banner is not None and draft.banner_position == "bottom":
+        if children:
+            children.append(_separator())
+        children.append(banner)
 
     if not children:
         children.append(discord.ui.TextDisplay(PLACEHOLDER_TEXT))
@@ -249,6 +318,8 @@ def render_draft_preview_embed(draft: MessageDraft) -> discord.Embed:
 
     lines: list[str] = []
     if draft.description:
+        if draft.title and draft.title_description_separator:
+            lines.append("⸻")
         lines.append(draft.description)
     groups = _group_blocks(draft.blocks)
     for i, group in enumerate(groups):
