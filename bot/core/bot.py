@@ -43,6 +43,7 @@ EXTENSIONS = (
     "bot.cogs.roblox_stock",
     "bot.cogs.roblox_profile",
     "bot.cogs.presence_rotator",
+    "bot.cogs.voice",
 )
 
 
