@@ -58,6 +58,66 @@ async def get_top_spenders(
     return await db.fetchall(query, tuple(params))
 
 
+async def get_spender_profile(
+    db: Database, user_id: int, excluded_user_ids: list[int] | None = None
+) -> dict | None:
+    """Profil belanja SATU user buat notifikasi "Pembelian Baru": total
+    belanja, jumlah order, peringkat, dan selisih ke peringkat di atasnya.
+
+    Aturan hitungnya SAMA PERSIS kayak get_top_spenders() di atas (cuma
+    order completed + paid, akun di `excluded_user_ids` gak ikut keitung),
+    jadi angka & peringkatnya selalu nyambung sama papan leaderboard.
+
+    Peringkat = jumlah user yang total belanjanya LEBIH BESAR + 1, jadi dua
+    user dengan total sama dapet peringkat yang sama.
+
+    Return None kalau user itu dikecualiin dari leaderboard, atau belum
+    punya satu pun order completed+paid -- PENTING: panggil ini SETELAH
+    order yang barusan selesai udah tersimpen sebagai completed+paid,
+    kalau enggak order itu belum kehitung di total/peringkatnya."""
+    excluded_user_ids = excluded_user_ids or []
+    if user_id in excluded_user_ids:
+        return None
+
+    params: list = []
+    exclude_clause = ""
+    if excluded_user_ids:
+        placeholders = ",".join("?" for _ in excluded_user_ids)
+        exclude_clause = f"AND user_id NOT IN ({placeholders})"
+        params.extend(excluded_user_ids)
+
+    query = f"""
+        WITH spend AS (
+            SELECT user_id, SUM(total_price) AS total_spent, COUNT(*) AS total_orders
+            FROM orders
+            WHERE status = 'completed' AND payment_status = 'paid'
+            {exclude_clause}
+            GROUP BY user_id
+        ),
+        me AS (SELECT total_spent, total_orders FROM spend WHERE user_id = ?)
+        SELECT
+            me.total_spent AS total_spent,
+            me.total_orders AS total_orders,
+            (SELECT COUNT(*) FROM spend WHERE total_spent > me.total_spent) + 1 AS rank,
+            (SELECT COUNT(*) FROM spend) AS total_spenders,
+            (SELECT MIN(total_spent) FROM spend WHERE total_spent > me.total_spent) AS next_total
+        FROM me
+    """
+    params.append(user_id)
+    row = await db.fetchone(query, tuple(params))
+    if row is None or row["total_spent"] is None:
+        return None
+
+    next_total = row["next_total"]
+    return {
+        "total_spent": float(row["total_spent"]),
+        "total_orders": int(row["total_orders"]),
+        "rank": int(row["rank"]),
+        "total_spenders": int(row["total_spenders"]),
+        "gap_to_next": round(float(next_total) - float(row["total_spent"]), 2) if next_total is not None else None,
+    }
+
+
 # ============================================================================
 # ID PESAN LEADERBOARD -- dipake buat edit-in-place tiap /settings
 # leaderboard_refresh atau refresh terjadwal, bukan kirim pesan baru tiap
