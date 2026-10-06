@@ -28,7 +28,16 @@ from datetime import datetime
 import discord
 
 from bot.core.emojis import EMOJI_SUCCESS
-from bot.core.theme import COLOR_ACCENT, COLOR_DANGER, COLOR_PRIMARY, COLOR_SUCCESS, FOOTER_TEXT, MARK_DASH, star_rating
+from bot.core.theme import (
+    COLOR_ACCENT,
+    COLOR_DANGER,
+    COLOR_PRIMARY,
+    COLOR_SUCCESS,
+    FOOTER_TEXT,
+    MARK_BULLET,
+    MARK_DASH,
+    star_rating,
+)
 from bot.utils.helpers import calculate_final_price, discount_label, format_price
 
 
@@ -131,9 +140,136 @@ def invoice_view(
     return NoctraLayout(container, timeout=None)
 
 
-# Pengumuman pembelian ("Pembelian Baru") sempet dicoba di sini pake
-# Components V2, tapi di-revert balik ke embed klasik -- lihat
-# bot.ui.embeds.purchase_announcement_embed().
+# -- Pengumuman pembelian ("Pembelian Baru") ------------------------------------
+# Versi Components V2 dengan sistem TIER berdasarkan peringkat Top Spender:
+# makin tinggi peringkat pembeli, makin spesial tampilannya. Versi embed
+# klasik lama (bot.ui.embeds.purchase_announcement_embed) masih ada sebagai
+# cadangan, tapi udah gak dipake lagi sama pemanggilnya.
+
+_GOLD = 0xF1C40F
+_SILVER = 0xB8C0CC
+_BRONZE = 0xCD7F32
+
+
+def _purchase_tier(rank: int | None) -> dict:
+    """Tentuin tampilan notifikasi dari peringkat Top Spender pembeli.
+    rank None (gak masuk leaderboard / belum ada data) = tier standar."""
+    if rank == 1:
+        return {
+            "color": _GOLD,
+            "tag": "\U0001F451  LEGEND  {dot}  TOP SPENDER #1",
+            "callout": "\U0001F451 **Penguasa puncak Top Spender NOCTRA.** Respect!",
+        }
+    if rank == 2:
+        return {
+            "color": _SILVER,
+            "tag": "\U0001F948  ELITE  {dot}  TOP SPENDER #2",
+            "callout": "\U0001F948 **Nempel ketat di podium Top Spender NOCTRA.**",
+        }
+    if rank == 3:
+        return {
+            "color": _BRONZE,
+            "tag": "\U0001F949  ELITE  {dot}  TOP SPENDER #3",
+            "callout": "\U0001F949 **Nempel ketat di podium Top Spender NOCTRA.**",
+        }
+    if rank is not None and rank <= 10:
+        return {"color": COLOR_ACCENT, "tag": "\U0001F48E  PREMIUM  {dot}  TOP 10 SPENDER", "callout": None}
+    return {"color": COLOR_SUCCESS, "tag": None, "callout": None}
+
+
+def purchase_announcement_view(
+    buyer_display: str,
+    buyer_avatar_url: str | None,
+    product_row,
+    category_type_row,
+    order_row,
+    profile: dict | None = None,
+    badge_text: str | None = None,
+) -> discord.ui.LayoutView:
+    """Kartu publik "Si X baru aja beli Y" buat channel purchase-feed.
+
+    `profile` = hasil bot.database.queries.leaderboard.get_spender_profile()
+    (total belanja, peringkat, dst) -- None kalau pembeli dikecualiin dari
+    leaderboard atau datanya gak ada; blok "Profil Pembeli" otomatis
+    dilewat dan tampilannya jatuh ke tier standar.
+    `badge_text` = teks badge custom pembeli dari /badge (cuma dipakai buat
+    top 1-3, sama kayak aturan badge di leaderboard).
+
+    Urutan: header (avatar di kanan) -> pemisah -> detail pesanan ->
+    pemisah -> profil pembeli -> pemisah -> footer (gambar produk jadi
+    thumbnail kecil di kanan, sejajar baris footer)."""
+    rank = profile["rank"] if profile else None
+    tier = _purchase_tier(rank)
+
+    # Teks bebas dari user/staff -- di-escape biar markdown & mention nyasar
+    # (misal nama tampilan berisi @everyone) gak ikut ke-render.
+    def _safe(text: str) -> str:
+        return discord.utils.escape_mentions(discord.utils.escape_markdown(text))
+
+    header_lines: list[str] = []
+    if tier["tag"]:
+        tag = tier["tag"].format(dot=MARK_DASH)
+        if badge_text and rank is not None and rank <= 3:
+            tag = f"{tag}  {MARK_DASH}  {_safe(badge_text)}"
+        header_lines.append(f"-# {tag}")
+    header_lines.append(f"## {EMOJI_SUCCESS} Pembelian Baru")
+    header_lines.append(f"**{_safe(buyer_display)}** baru aja beli **{product_row['name']}**!")
+    header_text = discord.ui.TextDisplay("\n".join(header_lines))
+    header = (
+        discord.ui.Section(header_text, accessory=discord.ui.Thumbnail(media=buyer_avatar_url))
+        if buyer_avatar_url
+        else header_text
+    )
+
+    separator = lambda: discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small)  # noqa: E731
+    children: list = [header]
+
+    if tier["callout"]:
+        children.append(discord.ui.TextDisplay(f"> {tier['callout']}"))
+
+    # -- Detail pesanan
+    type_label = product_row["product_type"].replace("_", " ").title()
+    detail_lines = ["### Detail Pesanan", f"{MARK_BULLET} **Produk** : {product_row['name']}"]
+    if category_type_row:
+        cat_emoji = f"{category_type_row['emoji']} " if category_type_row["emoji"] else ""
+        detail_lines.append(f"{MARK_BULLET} **Kategori** : {cat_emoji}{category_type_row['name']}")
+    detail_lines.append(f"{MARK_BULLET} **Tipe** : {type_label}")
+    detail_lines.append(
+        f"{MARK_BULLET} **Harga** : **{format_price(order_row['total_price'], order_row['currency_label'])}**"
+    )
+    children.append(separator())
+    children.append(discord.ui.TextDisplay("\n".join(detail_lines)))
+
+    # -- Profil pembeli (total belanja + peringkat)
+    if profile:
+        currency = order_row["currency_label"]
+        profile_lines = [
+            "### Profil Pembeli",
+            f"{MARK_BULLET} **Total Belanja** : {format_price(profile['total_spent'], currency)}",
+            f"{MARK_BULLET} **Peringkat** : #{profile['rank']} dari {profile['total_spenders']} spender",
+            f"{MARK_BULLET} **Total Pesanan** : {profile['total_orders']}",
+        ]
+        if profile["gap_to_next"] is not None:
+            profile_lines.append(
+                f"{MARK_BULLET} **Naik Peringkat** : {format_price(profile['gap_to_next'], currency)} lagi"
+            )
+        elif profile["rank"] == 1:
+            profile_lines.append(f"{MARK_BULLET} **Status** : Puncak leaderboard")
+        children.append(separator())
+        children.append(discord.ui.TextDisplay("\n".join(profile_lines)))
+
+    # -- Footer: gambar produk jadi thumbnail kecil di kanan, sejajar teks footer
+    ts = int(datetime.utcnow().timestamp())
+    footer_text = discord.ui.TextDisplay(_footer_line(f"<t:{ts}:f>"))
+    product_image = product_row["image_url"] or None
+    children.append(separator())
+    children.append(
+        discord.ui.Section(footer_text, accessory=discord.ui.Thumbnail(media=product_image))
+        if product_image
+        else footer_text
+    )
+
+    return NoctraLayout(discord.ui.Container(*children, accent_colour=tier["color"]), timeout=None)
 
 
 # -- Detail produk --------------------------------------------------------------
