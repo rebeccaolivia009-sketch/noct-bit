@@ -18,6 +18,7 @@ from bot.core.logger import logger
 from bot.core.theme import COLOR_WARNING
 from bot.database.queries import cards as cards_q
 from bot.database.queries import category_types as category_types_q
+from bot.database.queries import leaderboard as leaderboard_q
 from bot.database.queries import orders as orders_q
 from bot.database.queries import payments as payments_q
 from bot.database.queries import products as products_q
@@ -234,10 +235,34 @@ async def _post_purchase_announcement(bot, order, product) -> None:
         buyer_avatar_url = None
 
     category_type = await category_types_q.get_category_type(db, product["category_type_id"])
-    embed = embeds.purchase_announcement_embed(buyer_display, buyer_avatar_url, product, category_type, order)
+
+    # Profil belanja pembeli (total belanja + peringkat Top Spender) buat
+    # nentuin tier & isi kartu. Aman dipanggil di sini: mark_completed()
+    # udah nyimpen order ini sebagai completed+paid SEBELUM manggil fungsi
+    # ini, jadi pembelian yang barusan kelar ikut kehitung. Kalau query-nya
+    # gagal, kartu tetep diposting tanpa blok profil (tier standar).
+    profile = None
+    badge_text = None
+    try:
+        excluded_ids = await runtime.leaderboard_excluded_user_ids()
+        profile = await leaderboard_q.get_spender_profile(db, order["user_id"], excluded_ids)
+        if profile and profile["rank"] <= 3:
+            # Badge custom leaderboard cuma berlaku buat top 1-3.
+            badge = await leaderboard_q.get_badge(db, order["user_id"])
+            badge_text = badge["text"] if badge else None
+    except Exception:  # noqa: BLE001
+        logger.warning("Gagal ambil profil spender buat pengumuman order #%s.", order["id"])
+        profile = None
+        badge_text = None
+
+    layout = components.purchase_announcement_view(
+        buyer_display, buyer_avatar_url, product, category_type, order, profile=profile, badge_text=badge_text
+    )
 
     try:
-        await channel.send(embed=embed)
+        # Gak ada yang boleh ke-ping dari kartu ini (nama pembeli/produk/
+        # badge itu teks bebas) -- allowed_mentions none buat jaga-jaga.
+        await channel.send(view=layout, allowed_mentions=discord.AllowedMentions.none())
     except discord.HTTPException:
         logger.exception("Gagal posting pengumuman pembelian buat order #%s.", order["id"])
 
