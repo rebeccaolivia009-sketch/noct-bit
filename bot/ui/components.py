@@ -195,9 +195,11 @@ def purchase_announcement_view(
     `badge_text` = teks badge custom pembeli dari /badge (cuma dipakai buat
     top 1-3, sama kayak aturan badge di leaderboard).
 
-    Urutan: header (avatar di kanan) -> pemisah -> detail pesanan ->
-    pemisah -> profil pembeli -> pemisah -> footer (gambar produk jadi
-    thumbnail kecil di kanan, sejajar baris footer)."""
+    Urutan: header (gambar produk jadi thumbnail di kanan atas) -> pemisah
+    -> detail pesanan -> pemisah -> profil pembeli (avatar pembeli jadi
+    thumbnail di kanan, sejajar blok ini) -> pemisah -> footer. Kalau blok
+    profil gak ada (pembeli dikecualiin dari leaderboard), avatar pindah
+    nempel ke blok detail pesanan biar tetep tampil."""
     rank = profile["rank"] if profile else None
     tier = _purchase_tier(rank)
 
@@ -215,11 +217,18 @@ def purchase_announcement_view(
     header_lines.append(f"## {EMOJI_SUCCESS} Pembelian Baru")
     header_lines.append(f"**{_safe(buyer_display)}** baru aja beli **{product_row['name']}**!")
     header_text = discord.ui.TextDisplay("\n".join(header_lines))
+    product_image = product_row["image_url"] or None
     header = (
-        discord.ui.Section(header_text, accessory=discord.ui.Thumbnail(media=buyer_avatar_url))
-        if buyer_avatar_url
+        discord.ui.Section(header_text, accessory=discord.ui.Thumbnail(media=product_image))
+        if product_image
         else header_text
     )
+
+    def _with_avatar(block: discord.ui.TextDisplay):
+        """Tempelin avatar pembeli sebagai thumbnail di kanan `block`."""
+        if not buyer_avatar_url:
+            return block
+        return discord.ui.Section(block, accessory=discord.ui.Thumbnail(media=buyer_avatar_url))
 
     separator = lambda: discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small)  # noqa: E731
     children: list = [header]
@@ -237,8 +246,9 @@ def purchase_announcement_view(
     detail_lines.append(
         f"{MARK_BULLET} **Harga** : **{format_price(order_row['total_price'], order_row['currency_label'])}**"
     )
+    detail_block = discord.ui.TextDisplay("\n".join(detail_lines))
     children.append(separator())
-    children.append(discord.ui.TextDisplay("\n".join(detail_lines)))
+    children.append(detail_block if profile else _with_avatar(detail_block))
 
     # -- Profil pembeli (total belanja + peringkat)
     if profile:
@@ -256,18 +266,12 @@ def purchase_announcement_view(
         elif profile["rank"] == 1:
             profile_lines.append(f"{MARK_BULLET} **Status** : Puncak leaderboard")
         children.append(separator())
-        children.append(discord.ui.TextDisplay("\n".join(profile_lines)))
+        children.append(_with_avatar(discord.ui.TextDisplay("\n".join(profile_lines))))
 
-    # -- Footer: gambar produk jadi thumbnail kecil di kanan, sejajar teks footer
+    # -- Footer (polos, tanpa thumbnail)
     ts = int(datetime.utcnow().timestamp())
-    footer_text = discord.ui.TextDisplay(_footer_line(f"<t:{ts}:f>"))
-    product_image = product_row["image_url"] or None
     children.append(separator())
-    children.append(
-        discord.ui.Section(footer_text, accessory=discord.ui.Thumbnail(media=product_image))
-        if product_image
-        else footer_text
-    )
+    children.append(discord.ui.TextDisplay(_footer_line(f"<t:{ts}:f>")))
 
     return NoctraLayout(discord.ui.Container(*children, accent_colour=tier["color"]), timeout=None)
 
