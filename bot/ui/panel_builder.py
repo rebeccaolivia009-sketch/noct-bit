@@ -51,13 +51,17 @@ class PanelBuilderView(BaseDraftBuilderView):
         # Response PERTAMA interaction ini WAJIB edit_message -- ini yang
         # ngerefresh pesan panel sendiri (opsi Select dsb).
         await interaction.response.edit_message(view=self)
+        await self._push_live(interaction)
 
+    async def _push_live(self, interaction: discord.Interaction) -> None:
+        """Simpen draft ke DB + push live ke pesan TARGET asli. Dipisah dari
+        _after_edit() biar sub-panel (misal ManageBannersView) bisa nge-push
+        perubahan tanpa harus balik ke tampilan builder utama."""
         await self._persist(interaction)
 
-        # Push live ke pesan TARGET asli -- ini pesan biasa (bukan
-        # ephemeral), jadi aman di-edit lewat channel.fetch_message() +
-        # .edit() biasa pake kredensial bot, gak perlu lewat mekanisme
-        # response interaction sama sekali.
+        # Pesan target ini pesan biasa (bukan ephemeral), jadi aman di-edit
+        # lewat channel.fetch_message() + .edit() biasa pake kredensial bot,
+        # gak perlu lewat mekanisme response interaction sama sekali.
         channel = interaction.client.get_channel(self.target_channel_id)  # type: ignore[attr-defined]
         if not isinstance(channel, discord.TextChannel):
             return

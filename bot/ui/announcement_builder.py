@@ -22,23 +22,29 @@ class AnnouncementBuilderView(BaseDraftBuilderView):
         self.target_channel_id = target_channel_id
         self.sent_message_id: int | None = None
 
+    def _preview_kwargs(self) -> dict:
+        return {"embed": render_draft_preview_embed(self.draft)}
+
     async def _after_edit(self, interaction: discord.Interaction) -> None:
         # Response PERTAMA interaction ini WAJIB edit_message -- ini yang
         # nunjukin preview approx (embed) di panel sendiri, satu-satunya
         # cara valid buat ngedit pesan ephemeral ini.
-        await interaction.response.edit_message(embed=render_draft_preview_embed(self.draft), view=self)
+        await interaction.response.edit_message(view=self, **self._preview_kwargs())
+        await self._push_live(interaction)
 
+    async def _push_live(self, interaction: discord.Interaction) -> None:
         # Begitu udah pernah dikirim, tiap edit lanjutan JUGA langsung live
         # ke pesan yang beneran keposting -- pesan itu bukan ephemeral,
         # jadi aman di-edit lewat channel.fetch_message() + .edit() biasa.
-        if self.sent_message_id is not None:
-            channel = interaction.client.get_channel(self.target_channel_id)  # type: ignore[attr-defined]
-            if isinstance(channel, discord.TextChannel):
-                try:
-                    sent_message = await channel.fetch_message(self.sent_message_id)
-                    await sent_message.edit(view=render_draft_layout(self.draft))
-                except (discord.NotFound, discord.HTTPException):
-                    pass
+        if self.sent_message_id is None:
+            return
+        channel = interaction.client.get_channel(self.target_channel_id)  # type: ignore[attr-defined]
+        if isinstance(channel, discord.TextChannel):
+            try:
+                sent_message = await channel.fetch_message(self.sent_message_id)
+                await sent_message.edit(view=render_draft_layout(self.draft))
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
     @discord.ui.button(label="Kirim", style=discord.ButtonStyle.success, row=4)
     async def send_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

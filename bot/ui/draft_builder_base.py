@@ -22,7 +22,16 @@ import discord
 
 from bot.database.queries import panel_buttons as panel_buttons_q
 from bot.ui import embeds
-from bot.utils.message_draft import ButtonSpec, MessageDraft, SeparatorBlock, TextBlock
+from bot.utils.message_draft import (
+    BANNER_COUNT,
+    BannerSpec,
+    ButtonSpec,
+    MessageDraft,
+    SeparatorBlock,
+    TextBlock,
+    banner_slot_choices,
+    effective_banner_position,
+)
 from bot.utils.validators import is_valid_emoji
 
 MAX_UNDO_HISTORY = 20
@@ -390,6 +399,144 @@ class ManageLinesView(discord.ui.View):
         await self.builder._after_edit(interaction)
 
 
+class ManageBannersView(discord.ui.View):
+    """Sub-panel buat ngatur DUA banner -- ngambil alih pesan panel yang
+    sama sementara (pola sama kayak ManageLinesView), tapi beda: tiap
+    perubahan di sini langsung kepush live (lewat builder._push_live) dan
+    panelnya TETEP kebuka, jadi staff bisa ngatur URL / on-off / posisi
+    berkali-kali tanpa buka ulang. Klik "Kembali" buat balik ke builder.
+
+    Baris 0: pilih banner mana yang lagi diatur (tombol nunjukin status
+    On/Off/Kosong). Baris 1: Set URL, On/Off, Hapus, Kembali. Baris 2:
+    Select posisi banner yang lagi dipilih."""
+
+    def __init__(self, builder: "BaseDraftBuilderView", selected: int = 0) -> None:
+        super().__init__(timeout=300)
+        self.builder = builder
+        self.selected = selected
+        self._rebuild()
+
+    @property
+    def spec(self) -> BannerSpec:
+        return self.builder.draft.banners[self.selected]
+
+    def _rebuild(self) -> None:
+        """Bangun ulang semua komponen dari state draft sekarang -- dipanggil
+        tiap ada perubahan biar label/status/opsi Select selalu sinkron."""
+        self.clear_items()
+        draft = self.builder.draft
+
+        for index, spec in enumerate(draft.banners):
+            if not spec.url:
+                state = "Kosong"
+            else:
+                state = "On" if spec.enabled else "Off"
+            button = discord.ui.Button(
+                label=f"Banner {index + 1}: {state}",
+                style=discord.ButtonStyle.primary if index == self.selected else discord.ButtonStyle.secondary,
+                row=0,
+            )
+            button.callback = self._make_pick_callback(index)
+            self.add_item(button)
+
+        spec = self.spec
+        has_url = bool(spec.url)
+
+        set_url_button = discord.ui.Button(
+            label="Ganti URL" if has_url else "Set URL", style=discord.ButtonStyle.secondary, row=1
+        )
+        set_url_button.callback = self._on_set_url
+        self.add_item(set_url_button)
+
+        toggle_button = discord.ui.Button(
+            label="Aktif: On" if spec.enabled else "Aktif: Off",
+            style=discord.ButtonStyle.success if spec.enabled else discord.ButtonStyle.secondary,
+            row=1,
+            disabled=not has_url,
+        )
+        toggle_button.callback = self._on_toggle
+        self.add_item(toggle_button)
+
+        remove_button = discord.ui.Button(label="Hapus", style=discord.ButtonStyle.danger, row=1, disabled=not has_url)
+        remove_button.callback = self._on_remove
+        self.add_item(remove_button)
+
+        back_button = discord.ui.Button(label="Kembali", style=discord.ButtonStyle.secondary, row=1)
+        back_button.callback = self._on_back
+        self.add_item(back_button)
+
+        current = effective_banner_position(draft, spec)
+        options = [
+            discord.SelectOption(label=label[:100], value=value, default=(value == current))
+            for value, label in banner_slot_choices(draft)
+        ]
+        select = discord.ui.Select(
+            placeholder=f"Posisi Banner {self.selected + 1}...", options=options, row=2
+        )
+        select.callback = self._on_position
+        self.add_item(select)
+
+    async def _apply(self, interaction: discord.Interaction) -> None:
+        """Refresh panel ini + push perubahan ke pesan target. WAJIB jadi
+        response PERTAMA `interaction` (edit_message), sama alasannya kayak
+        BaseDraftBuilderView._after_edit."""
+        self.builder._sync_toggle_labels()
+        self._rebuild()
+        await interaction.response.edit_message(view=self, **self.builder._preview_kwargs())
+        await self.builder._push_live(interaction)
+
+    def _make_pick_callback(self, index: int):
+        async def callback(interaction: discord.Interaction) -> None:
+            self.selected = index
+            self._rebuild()
+            await interaction.response.edit_message(view=self)
+
+        return callback
+
+    async def _on_set_url(self, interaction: discord.Interaction) -> None:
+        index = self.selected
+
+        async def on_submit(inter: discord.Interaction, value: str) -> None:
+            if value and not value.lower().startswith(("http://", "https://")):
+                await inter.response.send_message(
+                    embed=embeds.error_embed("URL banner harus diawali `http://` atau `https://`."), ephemeral=True
+                )
+                return
+            self.builder._snapshot()
+            spec = self.builder.draft.banners[index]
+            spec.url = value or None
+            if value:
+                spec.enabled = True  # ngasih URL baru = langsung dinyalain
+            await self._apply(inter)
+
+        modal = _SingleFieldModal(
+            f"Atur Banner {index + 1}", "URL gambar banner (kosongin buat hapus)", default=self.spec.url,
+            required=False, placeholder="https://...", on_submit_callback=on_submit,
+        )
+        await interaction.response.send_modal(modal)
+
+    async def _on_toggle(self, interaction: discord.Interaction) -> None:
+        self.builder._snapshot()
+        self.spec.enabled = not self.spec.enabled
+        await self._apply(interaction)
+
+    async def _on_remove(self, interaction: discord.Interaction) -> None:
+        self.builder._snapshot()
+        self.spec.url = None
+        self.spec.enabled = True
+        await self._apply(interaction)
+
+    async def _on_position(self, interaction: discord.Interaction) -> None:
+        select = [c for c in self.children if isinstance(c, discord.ui.Select)][0]
+        self.builder._snapshot()
+        self.spec.position = select.values[0]  # type: ignore[attr-defined]
+        await self._apply(interaction)
+
+    async def _on_back(self, interaction: discord.Interaction) -> None:
+        self.builder._sync_toggle_labels()
+        await self.builder._after_edit(interaction)
+
+
 class BaseDraftBuilderView(discord.ui.View):
     def __init__(self, *, timeout: float | None = 1800) -> None:
         super().__init__(timeout=timeout)
@@ -426,7 +573,8 @@ class BaseDraftBuilderView(discord.ui.View):
     def _sync_toggle_labels(self) -> None:
         """Samain label/warna tombol toggle tata letak dengan state draft."""
         draft = self.draft
-        self.banner_position_button.label = "Banner: Atas" if draft.banner_position == "top" else "Banner: Bawah"
+        active_banners = sum(1 for b in draft.banners if b.url and b.enabled)
+        self.banner_button.label = f"Banner ({active_banners}/{BANNER_COUNT})"
         self.thumbnail_position_button.label = (
             "Thumb: Deskripsi" if draft.thumbnail_position == "description" else "Thumb: Judul"
         )
@@ -446,6 +594,19 @@ class BaseDraftBuilderView(discord.ui.View):
         komponen/modal-nya. Subclass override buat nambahin live-push ke
         pesan lain (target asli / pesan yang udah terkirim)."""
         await interaction.response.edit_message(view=self)
+
+    def _preview_kwargs(self) -> dict:
+        """Kwargs tambahan buat `edit_message()` yang nampilin ulang preview
+        draft di pesan panel (dipake ManageBannersView). Default kosong --
+        AnnouncementBuilderView override buat ngasih embed preview-nya."""
+        return {}
+
+    async def _push_live(self, interaction: discord.Interaction) -> None:
+        """Simpen/push draft sekarang ke tujuan aslinya (pesan target /panel,
+        pesan pengumuman yang udah terkirim) TANPA ngubah pesan panel ini --
+        dipanggil SETELAH response interaction udah dipakai. Default gak
+        ngapa-ngapain; subclass yang override."""
+        return None
 
     async def _on_separator_select(self, interaction: discord.Interaction) -> None:
         select = [c for c in self.children if isinstance(c, discord.ui.Select)][0]
@@ -546,30 +707,12 @@ class BaseDraftBuilderView(discord.ui.View):
         )
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="Banner", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Banner (0/2)", style=discord.ButtonStyle.secondary, row=1)
     async def banner_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        async def on_submit(inter: discord.Interaction, value: str) -> None:
-            self._snapshot()
-            self.draft.banner_url = value or None
-            await self._after_edit(inter)
-            await inter.followup.send(
-                embed=embeds.success_embed("Banner diatur." if value else "Banner dihapus."), ephemeral=True
-            )
-
-        modal = _SingleFieldModal(
-            "Atur Banner", "URL gambar banner (kosongin buat hapus)", default=self.draft.banner_url,
-            required=False, placeholder="https://...", on_submit_callback=on_submit,
-        )
-        await interaction.response.send_modal(modal)
+        # Buka sub-panel buat ngatur dua banner (URL, on/off, posisi).
+        await interaction.response.edit_message(view=ManageBannersView(self))
 
     # -- Toggle tata letak (row 1, di sebelah Banner) ----------------------
-
-    @discord.ui.button(label="Banner: Atas", style=discord.ButtonStyle.secondary, row=1)
-    async def banner_position_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        self._snapshot()
-        self.draft.banner_position = "bottom" if self.draft.banner_position == "top" else "top"
-        self._sync_toggle_labels()
-        await self._after_edit(interaction)
 
     @discord.ui.button(label="Thumb: Deskripsi", style=discord.ButtonStyle.secondary, row=1)
     async def thumbnail_position_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
