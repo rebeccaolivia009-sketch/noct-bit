@@ -849,7 +849,7 @@ def store_status_container(
     jam_text = f"**Jam Operasional**\n{open_time} \u2013 {close_time} WIB"
     if not is_open:
         jam_text += (
-            "\n\nTerimakasih telah sudah berbelanja hari ini, "
+            "\n\nTerimakasih telah berbelanja hari ini, "
             "semoga makin melimpah rezeki kalian"
         )
     if ping_role_id:
