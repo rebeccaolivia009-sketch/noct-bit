@@ -27,12 +27,13 @@ from datetime import datetime
 
 import discord
 
-from bot.core.emojis import EMOJI_SUCCESS
+from bot.core.emojis import EMOJI_INFO, EMOJI_SUCCESS
 from bot.core.theme import (
     COLOR_ACCENT,
     COLOR_DANGER,
     COLOR_PRIMARY,
     COLOR_SUCCESS,
+    COLOR_WARNING,
     FOOTER_TEXT,
     MARK_BULLET,
     MARK_DASH,
@@ -810,6 +811,31 @@ def roblox_catalog_container(
     return discord.ui.Container(*children, accent_colour=COLOR_PRIMARY)
 
 
+# Status KHUSUS panel status toko (/storestatus khusus) -- lapisan manual di
+# atas BUKA/TUTUP otomatis, buat kondisi darurat/jaga-jaga. `message` =
+# teks bawaan kalau staff gak ngisi pesan custom.
+STORE_SPECIAL_PRESETS: dict[str, dict] = {
+    "slow": {
+        "label": "RESPON LAMBAT",
+        "color": COLOR_WARNING,
+        "tagline": "Balasan dan proses order mungkin lebih lama dari biasanya.",
+        "message": (
+            "Lagi banyak pesanan masuk, jadi balasan dan proses order bisa lebih lama dari biasanya.\n"
+            "Makasih ya sudah sabar menunggu, pesananmu tetap kami kerjakan satu per satu."
+        ),
+    },
+    "maintenance": {
+        "label": "PERBAIKAN SISTEM",
+        "color": 0xE67E22,
+        "tagline": "Order sementara belum bisa diproses.",
+        "message": (
+            "Sistem lagi kami perbaiki biar layanan makin stabil.\n"
+            "Kami kabari begitu sudah normal kembali. Makasih atas pengertiannya."
+        ),
+    },
+}
+
+
 def store_status_container(
     state: str,
     open_time: str,
@@ -820,62 +846,105 @@ def store_status_container(
     banner_url: str | None,
     thumbnail_url: str | None,
     ping_role_id: int | None = None,
+    *,
+    next_change_ts: int | None = None,
+    special: str | None = None,
+    special_message: str | None = None,
+    special_since: int | None = None,
+    emoji_special: str | None = None,
 ) -> discord.ui.Container:
-    """Isi panel status toko (/storestatus) -- tata letak PERSIS 4 bagian
-    yang diminta: banner -> pemisah -> judul -> pemisah -> jam operasional
-    (+ role notifikasi, SEJAJAR di blok teks yang sama) -> pemisah ->
-    status+indikator -> pemisah -> footer (teks credit, thumbnail nempel
-    sejajar lewat Section accessory kayak shop_panel_container). `state`
-    di-hitung OTOMATIS dari jam operasional (lihat
-    bot.utils.store_status.compute_state), builder ini cuma nge-render
-    hasilnya -- gak ada logic jam sama sekali di sini.
+    """Isi panel status toko (/storestatus). Urutan (semua dipisah garis):
 
-    CATATAN soal `ping_role_id`: nampilin mention role di sini CUMA buat
-    INFO VISUAL -- Discord GAK ngirim notifikasi ping dari mention yang
-    nongol lewat EDIT pesan (cuma pesan BARU yang beneran nge-ping).
-    Notifikasi asli tetep dikirim terpisah lewat
-    bot.utils.store_status.notify_state_ping tiap status BENERAN
-    berubah."""
+      banner -> header status (tag, judul status + indikator, satu kalimat
+      penjelas; logo toko jadi thumbnail di kanan) -> jadwal (jam
+      operasional + hitung mundur live) -> pesan (ucapan terima kasih
+      pas tutup / pesan status khusus / catatan staff) -> footer.
+
+    `state` ("open"/"closed") di-hitung OTOMATIS dari jam operasional (lihat
+    bot.utils.store_status.compute_state) -- builder ini cuma nge-render,
+    gak ada logic jam di sini. `next_change_ts` = unix timestamp kapan
+    status berikutnya berubah (bot.utils.store_status.next_change); dirender
+    sebagai timestamp relatif Discord (`<t:...:R>`) yang ngitung mundur
+    SENDIRI di sisi pembaca, jadi panel gak perlu diedit berkala.
+
+    `special` ("slow"/"maintenance") = status khusus manual yang NIMPA
+    tampilan buka/tutup (lihat STORE_SPECIAL_PRESETS); `special_message`
+    mengganti teks bawaan jenisnya, `special_since` ditampilin sebagai
+    "sejak ..." biar ketahuan kalau lupa dimatiin.
+
+    CATATAN soal `ping_role_id`: mention role di sini CUMA buat INFO VISUAL
+    -- Discord GAK ngirim notifikasi ping dari mention lewat EDIT pesan.
+    Ping asli dikirim terpisah lewat bot.utils.store_status.notify_state_ping.
+    Semua emoji dateng dari pemanggil (setting custom server) atau
+    bot.core.emojis -- gak ada emoji Unicode hardcode di sini."""
     is_open = state == "open"
+    preset = STORE_SPECIAL_PRESETS.get(special) if special else None
+
+    if preset:
+        indicator = emoji_special or EMOJI_INFO
+        label, tagline, accent = preset["label"], preset["tagline"], preset["color"]
+    elif is_open:
+        indicator, label, accent = emoji_open, "BUKA", COLOR_SUCCESS
+        tagline = "Pesananmu langsung kami proses. Selamat berbelanja!"
+    else:
+        indicator, label, accent = emoji_closed, "TUTUP", COLOR_DANGER
+        tagline = "Toko lagi istirahat, tapi pesananmu tetap kami terima."
+
+    def separator() -> discord.ui.Separator:
+        return discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small)
+
     children: list = []
 
     if banner_url:
         children.append(discord.ui.MediaGallery(discord.MediaGalleryItem(media=banner_url)))
-        children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+        children.append(separator())
 
-    children.append(discord.ui.TextDisplay("## Status Toko"))
-    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+    # -- Header status (logo toko jadi thumbnail di kanan)
+    header_text = discord.ui.TextDisplay(
+        f"-# {FOOTER_TEXT}  \u00b7  STATUS TOKO\n## {indicator} {label}\n{tagline}"
+    )
+    children.append(
+        discord.ui.Section(header_text, accessory=discord.ui.Thumbnail(media=thumbnail_url))
+        if thumbnail_url
+        else header_text
+    )
+    children.append(separator())
 
-    jam_text = f"**Jam Operasional**\n{open_time} \u2013 {close_time} WIB"
-    if not is_open:
-        jam_text += (
-            "\n\nTerimakasih telah berbelanja hari ini, "
-            "semoga makin melimpah rezeki kalian"
-        )
-    if ping_role_id:
-        jam_text += f"\n-# \U0001F514 Notifikasi buka/tutup: <@&{ping_role_id}>"
-    children.append(discord.ui.TextDisplay(jam_text))
-    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+    # -- Jadwal: jam operasional + hitung mundur live (cuma kalau gak lagi
+    # ada status khusus -- hitung mundur ke "buka/tutup" nyesatin pas darurat)
+    schedule = [f"{MARK_BULLET} **Jam Operasional** : {open_time} \u2013 {close_time} WIB"]
+    if preset:
+        if special_since:
+            schedule.append(f"{MARK_BULLET} **Berlaku Sejak** : <t:{special_since}:R>")
+    elif next_change_ts:
+        schedule.append(f"{MARK_BULLET} **{'Tutup' if is_open else 'Buka Lagi'}** : <t:{next_change_ts}:R>")
+    children.append(discord.ui.TextDisplay("\n".join(schedule)))
 
-    status_emoji = emoji_open if is_open else emoji_closed
-    status_label = "BUKA" if is_open else "TUTUP"
-    status_text = f"## {status_emoji} {status_label}"
+    # -- Pesan: status khusus / ucapan terima kasih pas tutup / catatan staff
+    message_lines: list[str] = []
+    if preset:
+        body = special_message or preset["message"]
+        message_lines.extend(f"> {line}" for line in body.splitlines() if line.strip())
+    elif not is_open:
+        message_lines.append("> Terima kasih sudah mempercayai dan berbelanja di toko kami.")
+        message_lines.append("> Semoga harimu Minggu terus.")
     if note:
-        status_text += f"\n{note}"
-    children.append(discord.ui.TextDisplay(status_text))
-    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+        if message_lines:
+            message_lines.append("")
+        message_lines.append(f"{MARK_BULLET} {note}")
+    if message_lines:
+        children.append(separator())
+        children.append(discord.ui.TextDisplay("\n".join(message_lines)))
 
-    footer_text = discord.ui.TextDisplay(
-        "-# Ini adalah jam operasional Noctra Store \u2014 Jika memesan produk di jam tutup "
-        "maka akan di proses besok nya"
-    )
-    footer_block = (
-        discord.ui.Section(footer_text, accessory=discord.ui.Thumbnail(media=thumbnail_url))
-        if thumbnail_url else footer_text
-    )
-    children.append(footer_block)
+    # -- Footer
+    footer_lines = []
+    if ping_role_id:
+        footer_lines.append(f"-# {EMOJI_INFO} Notifikasi buka/tutup: <@&{ping_role_id}>")
+    footer_lines.append("-# Pesanan di luar jam operasional diproses saat toko buka kembali.")
+    children.append(separator())
+    children.append(discord.ui.TextDisplay("\n".join(footer_lines)))
 
-    return discord.ui.Container(*children, accent_colour=COLOR_SUCCESS if is_open else COLOR_DANGER)
+    return discord.ui.Container(*children, accent_colour=accent)
 
 
 def welcome_dm_container(categories: list, banner_url: str | None) -> discord.ui.Container:
