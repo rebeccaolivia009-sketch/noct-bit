@@ -50,6 +50,25 @@ def compute_state(open_time: str, close_time: str, now: datetime | None = None) 
     return "open" if is_open else "closed"
 
 
+def next_change(open_time: str, close_time: str, now: datetime | None = None) -> datetime | None:
+    """Kapan status buka/tutup BERIKUTNYA berubah (datetime WIB) -- dipake
+    buat hitung mundur live di panel (timestamp Discord `<t:...:R>`).
+    Kalau lagi buka = waktu tutup berikutnya, kalau lagi tutup = waktu buka
+    berikutnya. None kalau buka == tutup (24 jam, gak ada perubahan).
+    Nanganin jam yang ngelewatin tengah malam: kalau jam targetnya hari ini
+    udah lewat, berarti besok."""
+    now = (now or datetime.now(WIB)).astimezone(WIB)
+    open_t = _parse_hhmm(open_time)
+    close_t = _parse_hhmm(close_time)
+    if open_t == close_t:
+        return None
+    target = close_t if compute_state(open_time, close_time, now) == "open" else open_t
+    candidate = now.replace(hour=target.hour, minute=target.minute, second=0, microsecond=0)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    return candidate
+
+
 async def refresh_store_status(bot) -> bool:
     """Hitung ulang state dari jam operasional, simpen ke settings (cache
     buat /storestatus view), terus edit-in-place (atau posting baru kalau
@@ -72,12 +91,28 @@ async def refresh_store_status(bot) -> bool:
     if not isinstance(channel, discord.TextChannel):
         return False
 
+    # Status khusus manual (respon lambat / perbaikan) -- kalau aktif, nimpa
+    # tampilan BUKA/TUTUP otomatis di panel (state otomatisnya tetep
+    # dihitung & disimpen di atas, jadi balik normal begitu dimatiin).
+    special = await runtime.store_status_special()
+    emoji_special = None
+    if special == "slow":
+        emoji_special = await runtime.store_status_emoji_slow()
+    elif special == "maintenance":
+        emoji_special = await runtime.store_status_emoji_maintenance()
+
+    upcoming = next_change(open_time, close_time)
     container = components.store_status_container(
         state, open_time, close_time,
         await runtime.store_status_emoji_open(), await runtime.store_status_emoji_closed(),
         await runtime.store_status_note(),
         await runtime.store_status_banner_url(), await runtime.store_status_thumbnail_url(),
         ping_role_id=await runtime.store_status_ping_role_id(),
+        next_change_ts=int(upcoming.timestamp()) if upcoming else None,
+        special=special,
+        special_message=await runtime.store_status_special_message(),
+        special_since=await runtime.store_status_special_since(),
+        emoji_special=emoji_special,
     )
     view = components.NoctraLayout(container, timeout=None)
 
@@ -115,6 +150,11 @@ async def notify_state_ping(bot, state: str) -> None:
     diem-diem aja kalau role/channel-nya belum diatur."""
     db = bot.db
     runtime = RuntimeSettings(db)
+    # Lagi ada status khusus (respon lambat/perbaikan) -- jangan ping
+    # "toko BUKA!" yang nyesatin, panelnya sendiri lagi nunjukin kondisi
+    # darurat.
+    if await runtime.store_status_special():
+        return
     role_id = await runtime.store_status_ping_role_id()
     if not role_id:
         return

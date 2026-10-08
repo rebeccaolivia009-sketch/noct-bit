@@ -6,6 +6,7 @@ dari DB di atas default dari `.env`.
 from __future__ import annotations
 
 from bot.core.config import config
+from bot.core.emojis import EMOJI_ERROR, EMOJI_INFO, EMOJI_SUCCESS
 from bot.database.core import Database
 from bot.database.queries import settings as settings_q
 
@@ -435,14 +436,16 @@ class RuntimeSettings:
 
     async def store_status_emoji_open(self) -> str:
         """Emoji custom buat indikator status BUKA -- diatur lewat
-        /storestatus emoji, default emoji bulet hijau bawaan Discord."""
-        value = await self._get("store_status_emoji_open", "\U0001F7E2")
+        /storestatus emoji. Default-nya emoji custom server (bot.core.emojis),
+        bukan emoji Unicode bawaan Discord."""
+        value = await self._get("store_status_emoji_open", EMOJI_SUCCESS)
         return str(value)
 
     async def store_status_emoji_closed(self) -> str:
         """Emoji custom buat indikator status TUTUP -- diatur lewat
-        /storestatus emoji, default emoji bulet merah bawaan Discord."""
-        value = await self._get("store_status_emoji_closed", "\U0001F534")
+        /storestatus emoji. Default-nya emoji custom server (bot.core.emojis),
+        bukan emoji Unicode bawaan Discord."""
+        value = await self._get("store_status_emoji_closed", EMOJI_ERROR)
         return str(value)
 
     async def store_status_thumbnail_url(self) -> str | None:
@@ -460,6 +463,40 @@ class RuntimeSettings:
         belum diatur (gak ada ping sama sekali, cuma panel yang ke-update)."""
         value = await self._get("store_status_ping_role_id", None)
         return int(value) if value else None
+
+    # -- Status KHUSUS panel status toko (/storestatus khusus) ------------------
+    # Lapisan manual DI ATAS status buka/tutup otomatis -- buat kondisi
+    # darurat/jaga-jaga (respon lambat, perbaikan sistem). Bukan status
+    # utama: kosong = panel ngikutin jam operasional kayak biasa.
+
+    async def store_status_special(self) -> str | None:
+        """Jenis status khusus yang lagi aktif ("slow" / "maintenance"),
+        None kalau gak ada -- diatur lewat /storestatus khusus."""
+        value = await self._get("store_status_special", None)
+        return str(value) if value else None
+
+    async def store_status_special_message(self) -> str | None:
+        """Pesan custom buat status khusus (kosong = pake teks bawaan jenisnya)."""
+        value = await self._get("store_status_special_message", None)
+        return str(value) if value else None
+
+    async def store_status_special_since(self) -> int | None:
+        """Unix timestamp kapan status khusus dipasang -- ditampilin di
+        panel sebagai "sejak ..." biar kelihatan kalau lupa dimatiin."""
+        value = await self._get("store_status_special_since", None)
+        return int(value) if value and str(value).isdigit() else None
+
+    async def store_status_emoji_slow(self) -> str:
+        """Emoji custom buat status khusus "Respon Lambat" -- diatur lewat
+        /storestatus emoji (parameter `lambat`)."""
+        value = await self._get("store_status_emoji_slow", EMOJI_INFO)
+        return str(value)
+
+    async def store_status_emoji_maintenance(self) -> str:
+        """Emoji custom buat status khusus "Perbaikan Sistem" -- diatur lewat
+        /storestatus emoji (parameter `perbaikan`)."""
+        value = await self._get("store_status_emoji_maintenance", EMOJI_ERROR)
+        return str(value)
 
     # -- Kartu digital (/card, /settings card_*) --------------------------------
 
