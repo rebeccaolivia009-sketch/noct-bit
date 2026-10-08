@@ -17,6 +17,9 @@ Alur pertama kali pake:
      posting panel pertama kalinya kalau channel-nya udah diatur.
   3. (opsional) /storestatus emoji / banner / thumbnail / note -- custom
      tampilannya.
+  4. (jaga-jaga) /storestatus khusus -- pasang status KHUSUS sementara
+     (respon lambat / perbaikan sistem) yang nimpa BUKA/TUTUP otomatis,
+     matiin lagi pake /storestatus khusus_off. Bukan status utama.
 
 Kalau pesannya kehapus manual di Discord, refresh berikutnya (baik dari
 command di sini ATAU dari loop background) otomatis posting ulang pesan
@@ -27,6 +30,7 @@ ulang).
 from __future__ import annotations
 
 import re
+import time
 
 import discord
 from discord import app_commands
@@ -40,6 +44,7 @@ from bot.utils.store_status import notify_state_ping, refresh_store_status
 from bot.utils.validators import is_valid_emoji
 
 NOTE_MAX_LENGTH = 200
+SPECIAL_MESSAGE_MAX_LENGTH = 300
 _HHMM_RE = re.compile(r"^([01]?[0-9]|2[0-3]):([0-5][0-9])$")
 
 
@@ -150,27 +155,35 @@ class StoreStatusCog(commands.Cog):
         await settings_q.set_setting(self.bot.db, "store_status_message_id", "")
         await self._refresh_and_reply(interaction, f"Channel status toko diatur ke {channel.mention}.")
 
-    @storestatus_group.command(name="emoji", description="Atur emoji custom buat indikator BUKA dan TUTUP.")
+    @storestatus_group.command(name="emoji", description="Atur emoji custom buat indikator BUKA, TUTUP, dan status khusus.")
     @app_commands.describe(
-        buka="Emoji buat status BUKA (unicode atau custom server, misal <:online:123...>)",
-        tutup="Emoji buat status TUTUP (unicode atau custom server)",
+        buka="Emoji buat status BUKA (custom server, misal <:online:123...>)",
+        tutup="Emoji buat status TUTUP (custom server)",
+        lambat="(opsional) Emoji buat status khusus Respon Lambat",
+        perbaikan="(opsional) Emoji buat status khusus Perbaikan Sistem",
     )
     @staff_only()
-    async def emoji(self, interaction: discord.Interaction, buka: str, tutup: str) -> None:
-        if not is_valid_emoji(buka):
-            await interaction.response.send_message(
-                embed=embeds.error_embed(f"`{buka}` bukan emoji yang valid."), ephemeral=True
-            )
-            return
-        if not is_valid_emoji(tutup):
-            await interaction.response.send_message(
-                embed=embeds.error_embed(f"`{tutup}` bukan emoji yang valid."), ephemeral=True
-            )
-            return
+    async def emoji(
+        self, interaction: discord.Interaction, buka: str, tutup: str,
+        lambat: str | None = None, perbaikan: str | None = None,
+    ) -> None:
+        for value in (buka, tutup, lambat, perbaikan):
+            if value is not None and not is_valid_emoji(value):
+                await interaction.response.send_message(
+                    embed=embeds.error_embed(f"`{value}` bukan emoji yang valid."), ephemeral=True
+                )
+                return
 
         await settings_q.set_setting(self.bot.db, "store_status_emoji_open", buka)
         await settings_q.set_setting(self.bot.db, "store_status_emoji_closed", tutup)
-        await self._refresh_and_reply(interaction, f"Emoji status toko diatur: BUKA {buka} / TUTUP {tutup}.")
+        text = f"Emoji status toko diatur: BUKA {buka} / TUTUP {tutup}"
+        if lambat is not None:
+            await settings_q.set_setting(self.bot.db, "store_status_emoji_slow", lambat)
+            text += f" / LAMBAT {lambat}"
+        if perbaikan is not None:
+            await settings_q.set_setting(self.bot.db, "store_status_emoji_maintenance", perbaikan)
+            text += f" / PERBAIKAN {perbaikan}"
+        await self._refresh_and_reply(interaction, text + ".")
 
     @storestatus_group.command(name="banner", description="Atur/hapus gambar banner full-width paling atas panel status toko.")
     @app_commands.describe(image_url="URL gambar banner (PNG/JPG/WebP) -- kosongin buat hapus banner")
@@ -180,7 +193,7 @@ class StoreStatusCog(commands.Cog):
         message = "Banner status toko udah diatur." if image_url else "Banner status toko udah dihapus."
         await self._refresh_and_reply(interaction, message)
 
-    @storestatus_group.command(name="thumbnail", description="Atur/hapus gambar thumbnail kecil di footer panel status toko.")
+    @storestatus_group.command(name="thumbnail", description="Atur/hapus gambar thumbnail (logo) di samping judul status panel status toko.")
     @app_commands.describe(image_url="URL gambar thumbnail (PNG/JPG/WebP) -- kosongin buat hapus thumbnail")
     @staff_only()
     async def thumbnail(self, interaction: discord.Interaction, image_url: str | None = None) -> None:
@@ -202,19 +215,72 @@ class StoreStatusCog(commands.Cog):
         message = "Catatan status toko udah diatur." if catatan else "Catatan status toko udah dihapus."
         await self._refresh_and_reply(interaction, message)
 
+    @storestatus_group.command(
+        name="khusus",
+        description="Pasang status KHUSUS sementara (respon lambat / perbaikan) -- nimpa BUKA/TUTUP sampai dimatiin.",
+    )
+    @app_commands.describe(
+        jenis="Jenis status khusus",
+        pesan="(opsional) Pesan custom buat pembeli -- kosongin buat pake teks bawaan",
+    )
+    @app_commands.choices(
+        jenis=[
+            app_commands.Choice(name="Respon Lambat", value="slow"),
+            app_commands.Choice(name="Perbaikan Sistem / Darurat", value="maintenance"),
+        ]
+    )
+    @staff_only()
+    async def khusus(
+        self, interaction: discord.Interaction, jenis: app_commands.Choice[str], pesan: str | None = None
+    ) -> None:
+        if pesan and len(pesan) > SPECIAL_MESSAGE_MAX_LENGTH:
+            await interaction.response.send_message(
+                embed=embeds.error_embed(f"Pesan kepanjangan -- maksimal {SPECIAL_MESSAGE_MAX_LENGTH} karakter."),
+                ephemeral=True,
+            )
+            return
+        await settings_q.set_setting(self.bot.db, "store_status_special", jenis.value)
+        await settings_q.set_setting(self.bot.db, "store_status_special_message", pesan or "")
+        await settings_q.set_setting(self.bot.db, "store_status_special_since", str(int(time.time())))
+        await self._refresh_and_reply(
+            interaction,
+            f"Status khusus **{jenis.name}** dipasang -- panel sekarang nimpa BUKA/TUTUP otomatis. "
+            "Matiin pake `/storestatus khusus_off` kalau udah normal lagi.",
+        )
+
+    @storestatus_group.command(name="khusus_off", description="Matiin status khusus -- panel balik ngikutin jam operasional.")
+    @staff_only()
+    async def khusus_off(self, interaction: discord.Interaction) -> None:
+        runtime = RuntimeSettings(self.bot.db)
+        if not await runtime.store_status_special():
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Lagi gak ada status khusus yang aktif."), ephemeral=True
+            )
+            return
+        await settings_q.set_setting(self.bot.db, "store_status_special", "")
+        await settings_q.set_setting(self.bot.db, "store_status_special_message", "")
+        await settings_q.set_setting(self.bot.db, "store_status_special_since", "")
+        await self._refresh_and_reply(interaction, "Status khusus dimatiin -- panel balik ngikutin jam operasional.")
+
     @storestatus_group.command(name="view", description="Liat pengaturan status toko yang lagi aktif.")
     @staff_only()
     async def view(self, interaction: discord.Interaction) -> None:
         runtime = RuntimeSettings(self.bot.db)
         channel_id = await runtime.store_status_channel_id()
         state = await runtime.store_status_state()
+        special = await runtime.store_status_special()
+        special_names = {"slow": "Respon Lambat", "maintenance": "Perbaikan Sistem"}
+        special_text = f"**{special_names.get(special, special)}** (aktif -- nimpa tampilan BUKA/TUTUP)" if special else "Gak ada"
         lines = [
             f"\u25b8 **Status sekarang:** {'BUKA' if state == 'open' else 'TUTUP'} (otomatis)",
+            f"\u25b8 **Status Khusus:** {special_text}",
             f"\u25b8 **Jam Operasional:** {await runtime.store_status_open_time()} - {await runtime.store_status_close_time()} WIB",
             f"\u25b8 **Channel:** {f'<#{channel_id}>' if channel_id else 'Belum diatur'}",
             f"\u25b8 **Role di Panel:** {f'<@&{await runtime.store_status_ping_role_id()}>' if await runtime.store_status_ping_role_id() else 'Gak ada'}",
             f"\u25b8 **Emoji Buka:** {await runtime.store_status_emoji_open()}",
             f"\u25b8 **Emoji Tutup:** {await runtime.store_status_emoji_closed()}",
+            f"\u25b8 **Emoji Lambat:** {await runtime.store_status_emoji_slow()}",
+            f"\u25b8 **Emoji Perbaikan:** {await runtime.store_status_emoji_maintenance()}",
             f"\u25b8 **Banner:** {'Diatur' if await runtime.store_status_banner_url() else 'Belum diatur'}",
             f"\u25b8 **Thumbnail:** {'Diatur' if await runtime.store_status_thumbnail_url() else 'Belum diatur'}",
             f"\u25b8 **Catatan aktif:** {await runtime.store_status_note() or 'Gak ada'}",
