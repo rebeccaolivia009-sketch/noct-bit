@@ -102,6 +102,26 @@ class Config:
         default_factory=lambda: os.getenv("DEFAULT_CURRENCY", "USD")
     )
 
+    # Roblox trade checker (/tradecheck) -- dua-duanya OPSIONAL.
+    #
+    # ROBLOX_COOKIE = cookie .ROBLOSECURITY akun Roblox PENJUAL. Tanpa ini
+    # checker tetep jalan tapi cuma pake data publik (inventory, RAP,
+    # Value) -- status "boleh trade" dari Roblox & daftar item yang beneran
+    # bisa di-trade CUMA bisa dicek dengan login (endpoint trades.roblox.com).
+    # Cookie ini = akses PENUH ke akun, jadi: simpen CUMA di Railway
+    # Variables / .env (jangan pernah di kode atau chat), repr=False biar
+    # gak ikut ketulis kalau objek config di-print/log.
+    #
+    # ROBLOX_API_PROXY = URL proxy HTTP(S) buat semua request ke Roblox/
+    # Rolimons (misal http://user:pass@host:port). Isi kalau IP Railway
+    # sering kena 429/403 dari Roblox.
+    roblox_cookie: str = field(
+        default_factory=lambda: os.getenv("ROBLOX_COOKIE", "").strip(), repr=False
+    )
+    roblox_proxy: str = field(
+        default_factory=lambda: os.getenv("ROBLOX_API_PROXY", "").strip(), repr=False
+    )
+
     brand_name: str = "NOCTRA"
 
     def validate(self) -> list[str]:
