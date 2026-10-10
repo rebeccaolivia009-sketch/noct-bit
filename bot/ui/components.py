@@ -27,7 +27,7 @@ from datetime import datetime
 
 import discord
 
-from bot.core.emojis import EMOJI_INFO, EMOJI_SUCCESS
+from bot.core.emojis import EMOJI_ERROR, EMOJI_INFO, EMOJI_SUCCESS
 from bot.core.theme import (
     COLOR_ACCENT,
     COLOR_DANGER,
@@ -1065,6 +1065,158 @@ def payment_methods_container(methods: list) -> discord.ui.Container:
     )
 
     return discord.ui.Container(*children, accent_colour=COLOR_SUCCESS)
+
+
+# -- Roblox Trade Checker (/tradecheck) --------------------------------------
+# Verdict -> (label, aksen, kata penjelas). Semua indikator pake emoji custom
+# server (bot.core.emojis), gak ada emoji Unicode.
+_TRADE_VERDICTS = {
+    "eligible": ("LAYAK TRADE", COLOR_SUCCESS, EMOJI_SUCCESS),
+    "blocked": ("BELUM LAYAK", COLOR_DANGER, EMOJI_ERROR),
+    "review": ("PERLU VERIFIKASI", COLOR_WARNING, EMOJI_INFO),
+}
+_TRADE_STATE_EMOJI = {"ok": EMOJI_SUCCESS, "bad": EMOJI_ERROR, "unknown": EMOJI_INFO}
+_ITEM_NAME_MAX = 38
+
+
+def _short(text: str, limit: int = _ITEM_NAME_MAX) -> str:
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "\u2026"
+
+
+def roblox_trade_check_container(card: dict, *, staff_view: bool = False) -> discord.ui.Container:
+    """Kartu hasil /tradecheck (data dari bot.utils.roblox_trade_check.
+    result_to_card). Urutan, dipisah garis: header verdict (avatar di
+    kanan) -> Syarat Trade (4 baris status) -> Inventory Limited (RAP/Value)
+    -> Item Terbaik -> Item Tumbal -> Catatan -> footer.
+
+    `staff_view`=True nambahin blok "Catatan Staff" (info teknis: cookie
+    belum diatur dll) yang GAK boleh keliatan pembeli.
+
+    Total teks sengaja dijaga jauh di bawah batas 4000 karakter Components
+    V2: nama item dipotong, daftar item dibatasi."""
+    profile = card["profile"]
+    label, accent, indicator = _TRADE_VERDICTS[card["verdict"]]
+    verified = " (verified)" if profile.get("has_verified_badge") else ""
+
+    def separator() -> discord.ui.Separator:
+        return discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small)
+
+    header_text = discord.ui.TextDisplay(
+        f"-# {FOOTER_TEXT}  \u00b7  TRADE CHECKER\n"
+        f"## {indicator} {label}\n"
+        f"**{profile['display_name']}** (@{profile['name']}){verified}  \u00b7  ID {profile['id']}\n"
+        f"{card['headline']}"
+    )
+    children: list = [
+        discord.ui.Section(header_text, accessory=discord.ui.Thumbnail(media=profile["avatar_url"]))
+        if profile.get("avatar_url")
+        else header_text,
+        separator(),
+    ]
+
+    # -- Syarat Trade
+    row_lines = ["### Syarat Trade"]
+    for row in card["rows"]:
+        row_lines.append(f"{_TRADE_STATE_EMOJI[row['state']]} **{row['label']}** : {row['text']}")
+    children.append(discord.ui.TextDisplay("\n".join(row_lines)))
+
+    # -- Inventory Limited (cuma kalau inventory publik -- kalau privat, RAP/Value emang gak bisa dihitung)
+    if card["visibility"] == "public":
+        stats = card["stats"]
+        children.append(separator())
+        children.append(discord.ui.TextDisplay("\n".join([
+            "### Inventory Limited",
+            f"{MARK_BULLET} **Total Limited** : {stats['total_items']:,} item ({stats['unique_items']:,} unik)",
+            f"{MARK_BULLET} **Total RAP** : {stats['total_rap']:,} R$",
+            f"{MARK_BULLET} **Total Value** : {stats['total_value']:,} R$",
+        ])))
+
+        if card["top_items"]:
+            top_lines = ["### Item Terbaik"]
+            for index, item in enumerate(card["top_items"], start=1):
+                tags = ""
+                if item["serial"] is not None:
+                    tags += f" \u00b7 #{item['serial']}"
+                if item["count"] > 1:
+                    tags += f" \u00b7 x{item['count']}"
+                if item["projected"]:
+                    tags += " \u00b7 **PROJECTED**"
+                value_text = f"Value {item['value']:,}" if item["valued"] else "belum di-value"
+                top_lines.append(
+                    f"{index}. **{_short(item['name'])}**{tags}\n"
+                    f"-# RAP {item['rap']:,}  \u00b7  {value_text}"
+                )
+            children.append(separator())
+            children.append(discord.ui.TextDisplay("\n".join(top_lines)))
+
+        if card["tumbal_items"]:
+            tumbal_lines = ["### Item Tumbal (termurah)"]
+            for index, item in enumerate(card["tumbal_items"], start=1):
+                serial = f" \u00b7 #{item['serial']}" if item["serial"] is not None else ""
+                copies = f" \u00b7 x{item['count']}" if item.get("count", 1) > 1 else ""
+                rap_text = f"RAP {item['rap']:,}" if item["rap"] else "RAP belum ada"
+                tumbal_lines.append(f"{index}. **{_short(item['name'])}**{serial}{copies}  \u00b7  {rap_text}")
+            note = (
+                "-# Terverifikasi Roblox sebagai item yang bisa di-trade."
+                if card["tumbal_confirmed"]
+                else "-# Dari inventory publik; status bisa-di-trade belum diverifikasi resmi."
+            )
+            tumbal_lines.append(note)
+            children.append(separator())
+            children.append(discord.ui.TextDisplay("\n".join(tumbal_lines)))
+
+    # -- Catatan: hal yang harus diperbaiki / belum bisa dipastikan
+    # Penghalang PERTAMA udah tampil sebagai kalimat headline di atas --
+    # di sini cuma penghalang tambahan (kalau ada) + hal yang belum pasti.
+    notes: list[str] = [f"{MARK_BULLET} {line}" for line in card["blockers"][1:]]
+    notes.extend(f"{MARK_BULLET} {line}" for line in card["warnings"])
+    if notes:
+        children.append(separator())
+        children.append(discord.ui.TextDisplay("\n".join(["### Catatan", *notes])))
+
+    if staff_view and card["staff_notes"]:
+        children.append(separator())
+        children.append(discord.ui.TextDisplay(
+            "\n".join(["### Catatan Staff", *(f"-# {line}" for line in card["staff_notes"])])
+        ))
+
+    children.append(separator())
+    children.append(discord.ui.TextDisplay(
+        f"-# Data: Roblox & Rolimons  \u00b7  Dicek <t:{card['checked_at']}:R>\n"
+        "-# RAP dan Value adalah estimasi pasar, bukan jaminan harga."
+    ))
+    return discord.ui.Container(*children, accent_colour=accent)
+
+
+def roblox_check_panel_container() -> discord.ui.Container:
+    """Panel publik "Cek Akun Trade" -- ditaruh di channel Roblox, pembeli
+    klik tombolnya (ditambahin pemanggil di bot.ui.roblox_check_view) buat
+    ngecek akun sendiri. Hasilnya ephemeral, cuma keliatan si pengklik."""
+    def separator() -> discord.ui.Separator:
+        return discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small)
+
+    return discord.ui.Container(
+        discord.ui.TextDisplay(
+            f"-# {FOOTER_TEXT}  \u00b7  TRADE CHECKER\n"
+            f"## {EMOJI_INFO} Cek Akun Trade\n"
+            "Mau beli limited lewat trade? Cek dulu akun Roblox-mu sudah memenuhi syarat."
+        ),
+        separator(),
+        discord.ui.TextDisplay(
+            "\n".join([
+                f"{MARK_BULLET} Inventory publik atau privat",
+                f"{MARK_BULLET} Total RAP dan Value inventory",
+                f"{MARK_BULLET} Item tumbal (limited termurah milikmu)",
+                f"{MARK_BULLET} Status izin trade (Plus/Premium)",
+            ])
+        ),
+        separator(),
+        discord.ui.TextDisplay(
+            "Klik tombol di bawah lalu masukkan username Roblox-mu. Hasilnya hanya terlihat olehmu.\n"
+            "-# Pastikan inventory-mu publik supaya bisa dicek."
+        ),
+        accent_colour=COLOR_ACCENT,
+    )
 
 
 def roblox_profile_container(profile: dict, title_emoji: str = "\U0001F3AE") -> discord.ui.Container:
