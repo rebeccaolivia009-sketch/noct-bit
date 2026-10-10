@@ -44,6 +44,7 @@ EXTENSIONS = (
     "bot.cogs.roblox_profile",
     "bot.cogs.presence_rotator",
     "bot.cogs.voice",
+    "bot.cogs.roblox_check",
 )
 
 
@@ -179,10 +180,12 @@ class NoctraBot(commands.Bot):
             RobloxSlideButton,
         )
         from bot.ui.panel_reply_button import PanelReplyButton
+        from bot.ui.roblox_check_view import RobloxCheckPanelButton, RobloxRecheckButton
 
         self.add_dynamic_items(
             OrderActionButton, ReviewStartButton, ReplyButton, PanelReplyButton,
             CardRequestActionButton, GiveawayJoinButton, RobloxSlideButton,
+            RobloxCheckPanelButton, RobloxRecheckButton,
         )
         logger.info("Dynamic items registered.")
 
