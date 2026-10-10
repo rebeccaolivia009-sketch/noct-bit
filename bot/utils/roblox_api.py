@@ -88,7 +88,7 @@ def _clean_cookie(raw: str) -> str:
     kutip, ada prefix `.ROBLOSECURITY=`, ada spasi/newline nyasar."""
     value = (raw or "").strip().strip('"').strip("'")
     if value.upper().startswith(".ROBLOSECURITY="):
-        value = value.split("=", 1)[1]
+        value = value.split("=", 1)[1].strip().strip('"').strip("'")
     return "".join(value.split())
 
 
