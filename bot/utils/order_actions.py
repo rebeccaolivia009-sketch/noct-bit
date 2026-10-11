@@ -25,6 +25,7 @@ from bot.database.queries import products as products_q
 from bot.database.queries import reviews as reviews_q
 from bot.ui import components, embeds
 from bot.utils import activity_log, order_chat
+from bot.utils import tiers as tiers_util
 from bot.utils.helpers import RuntimeSettings, format_price, is_video_url
 
 
@@ -250,6 +251,9 @@ async def _post_purchase_announcement(bot, order, product) -> None:
             # Badge custom leaderboard cuma berlaku buat top 1-3.
             badge = await leaderboard_q.get_badge(db, order["user_id"])
             badge_text = badge["text"] if badge else None
+        if profile:
+            # Tier loyalitas (/tier) berdasarkan total belanja -- kosong kalau belum ada tier.
+            profile["tier_name"] = await tiers_util.tier_name_for_spend(db, channel.guild.id, profile["total_spent"])
     except Exception:  # noqa: BLE001
         logger.warning("Gagal ambil profil spender buat pengumuman order #%s.", order["id"])
         profile = None
@@ -430,6 +434,14 @@ async def mark_completed(bot, order_id: int, actor: discord.abc.User | None = No
         await _post_purchase_announcement(bot, order, product)
     except Exception:  # noqa: BLE001
         logger.warning("Pengumuman pembelian gagal diem-diem abis order #%s.", order_id)
+
+    # Tier loyalitas: kalau otomatisasi /tier nyala, update role tier si
+    # pembeli (dan kabarin kalau naik tier). Non-blocking -- gagal di sini
+    # gak boleh ngeganggu order yang udah selesai.
+    try:
+        await tiers_util.handle_order_completed(bot, order)
+    except Exception:  # noqa: BLE001
+        logger.warning("Update tier otomatis gagal diem-diem abis order #%s.", order_id)
 
     # Notif "Testi Money" ke staff pake bukti transfer yang udah kesimpen,
     # kalau ada. Sama-sama non-blocking kayak pengumuman pembelian di atas.

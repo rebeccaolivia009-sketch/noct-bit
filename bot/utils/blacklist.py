@@ -59,7 +59,10 @@ async def guard_order(interaction: discord.Interaction) -> bool:
 
 async def _alert_staff(interaction: discord.Interaction) -> None:
     now = time.monotonic()
-    if now - _last_alert.get(interaction.user.id, 0.0) < ALERT_COOLDOWN_SECONDS:
+    last = _last_alert.get(interaction.user.id)
+    # `None` = belum pernah -- JANGAN pake default 0.0: monotonic() itu uptime
+    # mesin, jadi di mesin yang baru nyala (<10 menit) alert pertama salah ke-throttle.
+    if last is not None and now - last < ALERT_COOLDOWN_SECONDS:
         return
     _last_alert[interaction.user.id] = now
     try:
