@@ -45,6 +45,8 @@ EXTENSIONS = (
     "bot.cogs.presence_rotator",
     "bot.cogs.voice",
     "bot.cogs.roblox_check",
+    "bot.cogs.blacklist",
+    "bot.cogs.tiers",
 )
 
 
@@ -181,11 +183,12 @@ class NoctraBot(commands.Bot):
         )
         from bot.ui.panel_reply_button import PanelReplyButton
         from bot.ui.roblox_check_view import RobloxCheckPanelButton, RobloxRecheckButton
+        from bot.ui.blacklist_view import BlacklistPageButton
 
         self.add_dynamic_items(
             OrderActionButton, ReviewStartButton, ReplyButton, PanelReplyButton,
             CardRequestActionButton, GiveawayJoinButton, RobloxSlideButton,
-            RobloxCheckPanelButton, RobloxRecheckButton,
+            RobloxCheckPanelButton, RobloxRecheckButton, BlacklistPageButton,
         )
         logger.info("Dynamic items registered.")
 
