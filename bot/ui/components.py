@@ -35,6 +35,8 @@ from bot.core.theme import (
     COLOR_SUCCESS,
     COLOR_WARNING,
     FOOTER_TEXT,
+    MARK_BLOCK_EMPTY,
+    MARK_BLOCK_FULL,
     MARK_BULLET,
     MARK_DASH,
     star_rating,
@@ -258,8 +260,10 @@ def purchase_announcement_view(
             "### Profil Pembeli",
             f"{MARK_BULLET} **Total Belanja** : {format_price(profile['total_spent'], currency)}",
             f"{MARK_BULLET} **Peringkat** : #{profile['rank']} dari {profile['total_spenders']} spender",
-            f"{MARK_BULLET} **Total Pesanan** : {profile['total_orders']}",
         ]
+        if profile.get("tier_name"):
+            profile_lines.append(f"{MARK_BULLET} **Tier** : {_escape_text(profile['tier_name'])}")
+        profile_lines.append(f"{MARK_BULLET} **Total Pesanan** : {profile['total_orders']}")
         if profile["gap_to_next"] is not None:
             profile_lines.append(
                 f"{MARK_BULLET} **Naik Peringkat** : {format_price(profile['gap_to_next'], currency)} lagi"
@@ -1064,6 +1068,219 @@ def payment_methods_container(methods: list) -> discord.ui.Container:
         discord.ui.TextDisplay("-# Pilih salah satu metode di atas, terus konfirmasi ke staff abis transfer.")
     )
 
+    return discord.ui.Container(*children, accent_colour=COLOR_SUCCESS)
+
+
+# -- Blacklist, profil pembeli, & tier loyalitas ------------------------------
+
+def _escape_text(text: str) -> str:
+    """Teks bebas (nama user, alasan, nama tier) -- di-escape biar markdown
+    dan mention nyasar gak ikut ke-render atau nge-ping orang."""
+    return discord.utils.escape_mentions(discord.utils.escape_markdown(str(text)))
+
+
+def _plain_separator() -> discord.ui.Separator:
+    return discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small)
+
+
+def blacklist_panel_container(entries: list[dict], page: int, total_pages: int, total: int) -> discord.ui.Container:
+    """Panel staff "Daftar Blacklist" (satu halaman). `entries` = dict
+    {user_id, reason, added_by, created_ts}; tombol Sebelumnya/Selanjutnya
+    ditempel pemanggil (bot.ui.blacklist_view)."""
+    header = [
+        f"-# {FOOTER_TEXT}  \u00b7  BLACKLIST",
+        f"## {EMOJI_ERROR} Daftar Blacklist",
+        f"{total} user diblokir dari order" + (f"  \u00b7  halaman {page + 1}/{total_pages}" if total_pages > 1 else ""),
+    ]
+    children: list = [discord.ui.TextDisplay("\n".join(header)), _plain_separator()]
+    if not entries:
+        children.append(discord.ui.TextDisplay("Belum ada user yang di-blacklist."))
+    else:
+        lines = []
+        for index, entry in enumerate(entries, start=1):
+            number = entry.get("number", index)  # pemanggil ngasih nomor urut global antar halaman
+            reason = _escape_text(entry["reason"])
+            reason = reason if len(reason) <= 120 else reason[:119].rstrip() + "\u2026"
+            lines.append(
+                f"{number}. <@{entry['user_id']}> (`{entry['user_id']}`)\n"
+                f"{MARK_BULLET} {reason}\n"
+                f"-# oleh <@{entry['added_by']}>  \u00b7  <t:{entry['created_ts']}:R>"
+            )
+        children.append(discord.ui.TextDisplay("\n".join(lines)))
+    return discord.ui.Container(*children, accent_colour=COLOR_DANGER)
+
+
+_STANDING_COLORS = {
+    "blacklisted": COLOR_DANGER, "attention": COLOR_WARNING, "trusted": COLOR_SUCCESS,
+    "active": COLOR_ACCENT, "new": COLOR_ACCENT,
+}
+_STANDING_EMOJI = {
+    "blacklisted": EMOJI_ERROR, "attention": EMOJI_INFO, "trusted": EMOJI_SUCCESS,
+    "active": EMOJI_SUCCESS, "new": EMOJI_INFO,
+}
+
+
+def buyer_info_container(card: dict) -> discord.ui.Container:
+    """Profil pembeli buat STAFF (/buyerinfo): status kepercayaan (dari
+    riwayat order, aturannya di bot.utils.blacklist.buyer_standing),
+    statistik order, tier loyalitas, dan alasan blacklist kalau ada.
+
+    card = {user{id,name,display_name,avatar_url,created_display,joined_display},
+    standing{key,label,summary,ratio}, blacklist{reason,added_by,created_ts}|None,
+    stats{...}, tier{current,next{name,remaining}}, currency}."""
+    user, standing, stats = card["user"], card["standing"], card["stats"]
+    currency = card.get("currency") or stats.get("currency_label") or ""
+
+    header_text = discord.ui.TextDisplay(
+        f"-# {FOOTER_TEXT}  \u00b7  PROFIL PEMBELI\n"
+        f"## {_STANDING_EMOJI[standing['key']]} {standing['label']}\n"
+        f"**{_escape_text(user['display_name'])}** (@{_escape_text(user['name'])})  \u00b7  <@{user['id']}>\n"
+        f"{standing['summary']}"
+    )
+    children: list = [
+        discord.ui.Section(header_text, accessory=discord.ui.Thumbnail(media=user["avatar_url"]))
+        if user.get("avatar_url") else header_text,
+        _plain_separator(),
+    ]
+
+    bad = stats["cancelled"] + stats["refunded"]
+    finished = stats["completed"] + bad
+    ratio_text = f"{standing['ratio'] * 100:.0f}% ({bad} dari {finished})" if finished else "belum ada"
+    order_lines = [
+        "### Riwayat Order",
+        f"{MARK_BULLET} **Selesai** : {stats['completed']}  \u00b7  **Total Belanja** : {format_price(stats['total_spent'], currency)}",
+        f"{MARK_BULLET} **Dibatalkan** : {stats['cancelled']}  \u00b7  **Refund** : {stats['refunded']}  \u00b7  **Kedaluwarsa** : {stats['expired']}",
+        f"{MARK_BULLET} **Rasio Batal/Refund** : {ratio_text}",
+    ]
+    if stats["last_order_at"]:
+        order_lines.append(f"{MARK_BULLET} **Order Terakhir** : {stats['last_order_at']} UTC")
+    children.append(discord.ui.TextDisplay("\n".join(order_lines)))
+
+    tier = card.get("tier") or {}
+    tier_lines = ["### Tier Loyalitas", f"{MARK_BULLET} **Tier Sekarang** : {_escape_text(tier['current']) if tier.get('current') else 'Belum ada'}"]
+    if tier.get("next"):
+        tier_lines.append(
+            f"{MARK_BULLET} **Tier Berikutnya** : {_escape_text(tier['next']['name'])} "
+            f"({format_price(tier['next']['remaining'], currency)} lagi)"
+        )
+    children.append(_plain_separator())
+    children.append(discord.ui.TextDisplay("\n".join(tier_lines)))
+
+    account_lines = ["### Akun Discord", f"{MARK_BULLET} **Dibuat** : {user['created_display']}"]
+    if user.get("joined_display"):
+        account_lines.append(f"{MARK_BULLET} **Join Server** : {user['joined_display']}")
+    children.append(_plain_separator())
+    children.append(discord.ui.TextDisplay("\n".join(account_lines)))
+
+    if card.get("blacklist"):
+        entry = card["blacklist"]
+        children.append(_plain_separator())
+        children.append(discord.ui.TextDisplay(
+            f"### Blacklist\n{MARK_BULLET} **Alasan** : {_escape_text(entry['reason'])}\n"
+            f"-# oleh <@{entry['added_by']}>  \u00b7  <t:{entry['created_ts']}:R>"
+        ))
+
+    return discord.ui.Container(*children, accent_colour=_STANDING_COLORS[standing["key"]])
+
+
+def _progress_bar(fraction: float, width: int = 12) -> str:
+    fraction = max(0.0, min(1.0, fraction))
+    filled = round(fraction * width)
+    return MARK_BLOCK_FULL * filled + MARK_BLOCK_EMPTY * (width - filled) + f"  {fraction * 100:.0f}%"
+
+
+def tier_progress_container(card: dict) -> discord.ui.Container:
+    """Kartu progres tier pembeli (/tier me). card = {display_name,
+    avatar_url, spend, currency, current{name,description}|None,
+    next{name,remaining,progress}|None, tiers[{name,min_spend,reached,
+    current}]}."""
+    currency = card.get("currency") or ""
+    current = card.get("current")
+    title = _escape_text(current["name"]) if current else "Belum Punya Tier"
+    header_lines = [
+        f"-# {FOOTER_TEXT}  \u00b7  TIER LOYALITAS",
+        f"## {EMOJI_SUCCESS if current else EMOJI_INFO} {title}",
+        f"{_escape_text(card['display_name'])}  \u00b7  Total belanja {format_price(card['spend'], currency)}",
+    ]
+    if current and current.get("description"):
+        header_lines.append(f"> {_escape_text(current['description'])}")
+    header_text = discord.ui.TextDisplay("\n".join(header_lines))
+    children: list = [
+        discord.ui.Section(header_text, accessory=discord.ui.Thumbnail(media=card["avatar_url"]))
+        if card.get("avatar_url") else header_text,
+        _plain_separator(),
+    ]
+
+    nxt = card.get("next")
+    if nxt:
+        children.append(discord.ui.TextDisplay("\n".join([
+            f"### Menuju {_escape_text(nxt['name'])}",
+            _progress_bar(nxt["progress"]),
+            f"{MARK_BULLET} Tinggal **{format_price(nxt['remaining'], currency)}** lagi.",
+        ])))
+    else:
+        children.append(discord.ui.TextDisplay(
+            "### Tier Tertinggi\nKamu sudah di puncak tier loyalitas. Terima kasih sudah jadi bagian NOCTRA!"
+            if current else "### Mulai Belanja\nBelum ada tier yang tersedia."
+        ))
+
+    if card["tiers"]:
+        lines = ["### Semua Tier"]
+        for tier in reversed(card["tiers"]):  # dari tertinggi ke terendah
+            marker = EMOJI_SUCCESS if tier["reached"] else MARK_BULLET
+            suffix = "  (tier kamu)" if tier["current"] else ""
+            lines.append(f"{marker} **{_escape_text(tier['name'])}**  \u00b7  min {format_price(tier['min_spend'], currency)}{suffix}")
+        children.append(_plain_separator())
+        children.append(discord.ui.TextDisplay("\n".join(lines)))
+    accent = COLOR_SUCCESS if current else COLOR_ACCENT
+    return discord.ui.Container(*children, accent_colour=accent)
+
+
+def tier_panel_container(tiers: list[dict], currency: str) -> discord.ui.Container:
+    """Panel publik "Tier Loyalitas" -- daftar semua tier + syaratnya.
+    tiers = [{name, role_id, min_spend, description}] urut dari terendah."""
+    lines: list[str] = []
+    for tier in reversed(tiers):
+        lines.append(f"### <@&{tier['role_id']}>\n{MARK_BULLET} **Minimal belanja** : {format_price(tier['min_spend'], currency)}")
+        if tier.get("description"):
+            lines.append(f"> {_escape_text(tier['description'])}")
+    body = "\n".join(lines) if lines else "Belum ada tier yang diatur."
+    return discord.ui.Container(
+        discord.ui.TextDisplay(
+            f"-# {FOOTER_TEXT}  \u00b7  TIER LOYALITAS\n## {EMOJI_INFO} Tier Loyalitas NOCTRA\n"
+            "Makin sering belanja, makin tinggi tier-mu. Role tier dikasih otomatis begitu total belanjamu cukup."
+        ),
+        _plain_separator(),
+        discord.ui.TextDisplay(body),
+        _plain_separator(),
+        discord.ui.TextDisplay("-# Cek progresmu kapan saja dengan /tier me"),
+        accent_colour=COLOR_ACCENT,
+    )
+
+
+def tier_up_container(card: dict) -> discord.ui.Container:
+    """DM "Naik Tier" ke pembeli. card = {name, description, spend,
+    next_name, next_remaining, currency}."""
+    currency = card.get("currency") or ""
+    lines = [
+        f"-# {FOOTER_TEXT}  \u00b7  TIER LOYALITAS",
+        f"## {EMOJI_SUCCESS} Selamat, Naik Tier!",
+        f"Kamu sekarang **{_escape_text(card['name'])}**.",
+    ]
+    if card.get("description"):
+        lines.append(f"> {_escape_text(card['description'])}")
+    children: list = [discord.ui.TextDisplay("\n".join(lines)), _plain_separator()]
+    detail = [f"{MARK_BULLET} **Total Belanja** : {format_price(card['spend'], currency)}"]
+    if card.get("next_name"):
+        detail.append(
+            f"{MARK_BULLET} **Tier Berikutnya** : {_escape_text(card['next_name'])} "
+            f"({format_price(card['next_remaining'], currency)} lagi)"
+        )
+    else:
+        detail.append(f"{MARK_BULLET} Kamu sudah di tier tertinggi.")
+    children.append(discord.ui.TextDisplay("\n".join(detail)))
+    children.append(_plain_separator())
+    children.append(discord.ui.TextDisplay("-# Terima kasih sudah mempercayai dan berbelanja di toko kami."))
     return discord.ui.Container(*children, accent_colour=COLOR_SUCCESS)
 
 

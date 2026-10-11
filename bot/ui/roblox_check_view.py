@@ -36,8 +36,10 @@ _last_check: dict[int, float] = {}
 
 
 def _cooldown_remaining(user_id: int) -> float:
-    elapsed = time.monotonic() - _last_check.get(user_id, 0.0)
-    return max(CHECK_COOLDOWN_SECONDS - elapsed, 0.0)
+    last = _last_check.get(user_id)
+    if last is None:  # belum pernah cek -- jangan pake default 0.0 (monotonic = uptime mesin)
+        return 0.0
+    return max(CHECK_COOLDOWN_SECONDS - (time.monotonic() - last), 0.0)
 
 
 def _start_cooldown(user_id: int) -> None:
