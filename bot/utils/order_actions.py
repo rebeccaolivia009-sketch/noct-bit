@@ -24,7 +24,7 @@ from bot.database.queries import payments as payments_q
 from bot.database.queries import products as products_q
 from bot.database.queries import reviews as reviews_q
 from bot.ui import components, embeds
-from bot.utils import activity_log, order_chat
+from bot.utils import activity_log, order_chat, order_events
 from bot.utils import tiers as tiers_util
 from bot.utils.helpers import RuntimeSettings, format_price, is_video_url
 
@@ -160,6 +160,8 @@ async def forward_to_staff(
         order = await orders_q.get_order(db, order_id)
         if order and not order["payment_proof_url"]:
             await orders_q.set_payment_proof_url(db, order_id, image_urls[0])
+            # Awal hitungan SLA "bukti bayar belum diverifikasi" (bot.cogs.sla).
+            await order_events.record(db, order_id, "proof")
 
     text = content if content else "*(lampiran, gak ada teks)*"
     line = f"**[{order_chat.now_str()}] {user.display_name}:** {text}"
@@ -336,6 +338,8 @@ async def mark_paid(bot, order_id: int, actor: discord.abc.User | None = None) -
     await orders_q.set_payment_status(db, order_id, "paid")
     if order["status"] == "pending":
         await orders_q.set_order_status(db, order_id, "processing")
+    if order["payment_status"] != "paid":  # klik ganda gak boleh dihitung dua kali
+        await order_events.record(db, order_id, "paid", actor)
 
     actor_display = _display_name(actor)
     is_owner = await _is_owner(db, actor)
@@ -380,6 +384,8 @@ async def mark_completed(bot, order_id: int, actor: discord.abc.User | None = No
     runtime = RuntimeSettings(db)
 
     await orders_q.set_order_status(db, order_id, "completed")
+    if order["status"] != "completed":  # klik ganda gak boleh dihitung dua kali
+        await order_events.record(db, order_id, "completed", actor)
     if order["payment_status"] != "paid":
         # Order yang selesai otomatis berarti udah lunas -- tanpa ini,
         # staff yang klik "Mark Completed" tanpa klik "Mark Paid" duluan
@@ -489,6 +495,8 @@ async def cancel_order(bot, order_id: int, reason: str | None, actor: discord.ab
 
     await orders_q.set_order_status(db, order_id, "cancelled")
     await orders_q.set_payment_status(db, order_id, "cancelled")
+    if order["status"] != "cancelled":
+        await order_events.record(db, order_id, "cancelled", actor)
     if order["stock_reserved"]:
         await products_q.adjust_stock(db, order["product_id"], 1)
         await orders_q.clear_stock_reserved(db, order_id)
@@ -537,6 +545,8 @@ async def refund_order(bot, order_id: int, reason: str | None, actor: discord.ab
         return False, "Order gak ketemu."
 
     await orders_q.set_order_status(db, order_id, "refunded")
+    if order["status"] != "refunded":
+        await order_events.record(db, order_id, "refunded", actor)
     if order["stock_reserved"]:
         await products_q.adjust_stock(db, order["product_id"], 1)
         await orders_q.clear_stock_reserved(db, order_id)
