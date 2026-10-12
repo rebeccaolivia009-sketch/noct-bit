@@ -1284,6 +1284,134 @@ def tier_up_container(card: dict) -> discord.ui.Container:
     return discord.ui.Container(*children, accent_colour=COLOR_SUCCESS)
 
 
+# -- SLA staff, statistik staff, pengingat batas bayar -------------------------
+
+_ALERT_LINES_PER_SECTION = 8
+
+
+def sla_alert_container(card: dict) -> discord.ui.Container:
+    """Pengingat staff (channel order-log): daftar yang kelamaan nunggu
+    tindakan. card = {role_id|None, sections:[{title, lines:[str]}], total,
+    round_note}. Tiap section dipotong 8 baris (+N lainnya) biar pesannya
+    gak kepanjangan."""
+    ping = f"<@&{card['role_id']}> " if card.get("role_id") else ""
+    children: list = [
+        discord.ui.TextDisplay(
+            f"-# {FOOTER_TEXT}  \u00b7  SLA STAFF\n## {EMOJI_INFO} Pengingat Staff\n"
+            f"{ping}{card['total']} hal menunggu tindakan."
+        ),
+    ]
+    for section in card["sections"]:
+        lines = section["lines"][:_ALERT_LINES_PER_SECTION]
+        if len(section["lines"]) > len(lines):
+            lines.append(f"-# ...dan {len(section['lines']) - len(lines)} lainnya")
+        children.append(_plain_separator())
+        children.append(discord.ui.TextDisplay("\n".join([f"### {section['title']}", *lines])))
+    if card.get("round_note"):
+        children.append(_plain_separator())
+        children.append(discord.ui.TextDisplay(f"-# {card['round_note']}"))
+    return discord.ui.Container(*children, accent_colour=COLOR_WARNING)
+
+
+def _fmt_secs(seconds: float | None) -> str:
+    if seconds is None:
+        return "-"
+    minutes = int(round(seconds) // 60)  # bulatin dulu: julianday() SQLite punya error desimal
+    if minutes < 1:
+        return "<1 menit"
+    hours, mins = divmod(minutes, 60)
+    if hours >= 24:
+        return f"{hours // 24} hari {hours % 24} jam"
+    if hours:
+        return f"{hours} jam {mins} mnt" if mins else f"{hours} jam"
+    return f"{mins} menit"
+
+
+def staff_stats_container(card: dict) -> discord.ui.Container:
+    """Statistik staff (/staffstats). Dua bentuk:
+      mode "overview": card = {mode, period, rows:[{staff_id, completed, paid,
+        shipments, claimed, median_handle, median_response, responses}], totals}
+      mode "detail": card = {mode, period, staff{id,name,display_name,avatar_url},
+        stats{...sama...}}
+    Median dipake (bukan rata-rata) biar satu order yang nyangkut lama gak
+    ngerusak angka."""
+    period = card["period"]
+    footnote = (
+        "-# Order dicatat sejak fitur ini dipasang. Pengiriman dan claim ticket diambil dari data lama."
+    )
+    if card["mode"] == "detail":
+        staff, st = card["staff"], card["stats"]
+        header_text = discord.ui.TextDisplay(
+            f"-# {FOOTER_TEXT}  \u00b7  STATISTIK STAFF  \u00b7  {period.upper()}\n"
+            f"## {EMOJI_INFO} {_escape_text(staff['display_name'])}\n<@{staff['id']}>"
+        )
+        children: list = [
+            discord.ui.Section(header_text, accessory=discord.ui.Thumbnail(media=staff["avatar_url"]))
+            if staff.get("avatar_url") else header_text,
+            _plain_separator(),
+            discord.ui.TextDisplay("\n".join([
+                "### Order",
+                f"{MARK_BULLET} **Diselesaikan** : {st['completed']}",
+                f"{MARK_BULLET} **Pembayaran Diverifikasi** : {st['paid']}",
+                f"{MARK_BULLET} **Dibatalkan / Refund** : {st['cancelled']} / {st['refunded']}",
+                f"{MARK_BULLET} **Median Waktu Proses** : {_fmt_secs(st['median_handle'])}  (lunas \u2192 selesai)",
+            ])),
+            _plain_separator(),
+            discord.ui.TextDisplay("\n".join([
+                "### Ticket & Pengiriman",
+                f"{MARK_BULLET} **Ticket Di-claim** : {st['claimed']}",
+                f"{MARK_BULLET} **Respon Pertama** : {st['responses']} ticket  \u00b7  median {_fmt_secs(st['median_response'])}",
+                f"{MARK_BULLET} **Bukti Pengiriman** : {st['shipments']}",
+            ])),
+            _plain_separator(),
+            discord.ui.TextDisplay(footnote),
+        ]
+        return discord.ui.Container(*children, accent_colour=COLOR_ACCENT)
+
+    lines = []
+    for index, row in enumerate(card["rows"], start=1):
+        lines.append(
+            f"{index}. <@{row['staff_id']}>  \u00b7  **{row['completed']}** selesai  \u00b7  "
+            f"**{row['paid']}** verifikasi\n"
+            f"-# proses {_fmt_secs(row['median_handle'])}  \u00b7  respon ticket {_fmt_secs(row['median_response'])}"
+            f"  \u00b7  kirim {row['shipments']}  \u00b7  claim {row['claimed']}"
+        )
+    body = "\n".join(lines) if lines else "Belum ada aktivitas staff di periode ini."
+    totals = card["totals"]
+    return discord.ui.Container(
+        discord.ui.TextDisplay(
+            f"-# {FOOTER_TEXT}  \u00b7  STATISTIK STAFF  \u00b7  {period.upper()}\n"
+            f"## {EMOJI_INFO} Performa Staff\n"
+            f"{totals['completed']} order selesai  \u00b7  {totals['paid']} pembayaran diverifikasi"
+        ),
+        _plain_separator(),
+        discord.ui.TextDisplay(body),
+        _plain_separator(),
+        discord.ui.TextDisplay(footnote),
+        accent_colour=COLOR_ACCENT,
+    )
+
+
+def pay_reminder_container(card: dict) -> discord.ui.Container:
+    """DM pengingat ke pembeli: order belum dibayar, batas bayar hampir
+    habis. card = {order_id, amount, currency, deadline_ts}."""
+    return discord.ui.Container(
+        discord.ui.TextDisplay(
+            f"-# {FOOTER_TEXT}  \u00b7  PENGINGAT PEMBAYARAN\n"
+            f"## {EMOJI_INFO} Order #{card['order_id']} Belum Dibayar\n"
+            f"Batas pembayaran berakhir <t:{card['deadline_ts']}:R> (<t:{card['deadline_ts']}:t>)."
+        ),
+        _plain_separator(),
+        discord.ui.TextDisplay(
+            f"{MARK_BULLET} **Total** : {format_price(card['amount'], card['currency'] or '')}\n"
+            f"{MARK_BULLET} Kirim bukti pembayaran sebelum batas waktu supaya order tidak dibatalkan otomatis."
+        ),
+        _plain_separator(),
+        discord.ui.TextDisplay("-# Sudah bayar? Kirim bukti transfernya, tim kami akan segera memverifikasi."),
+        accent_colour=COLOR_WARNING,
+    )
+
+
 # -- Roblox Trade Checker (/tradecheck) --------------------------------------
 # Verdict -> (label, aksen, kata penjelas). Semua indikator pake emoji custom
 # server (bot.core.emojis), gak ada emoji Unicode.
