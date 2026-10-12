@@ -47,6 +47,9 @@ EXTENSIONS = (
     "bot.cogs.roblox_check",
     "bot.cogs.blacklist",
     "bot.cogs.tiers",
+    "bot.cogs.sla",
+    "bot.cogs.staff_stats",
+    "bot.cogs.payment_reminder",
 )
 
 
