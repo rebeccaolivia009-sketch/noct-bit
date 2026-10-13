@@ -25,6 +25,7 @@ from bot.database.queries import products as products_q
 from bot.database.queries import reviews as reviews_q
 from bot.ui import components, embeds
 from bot.utils import activity_log, order_chat, order_events
+from bot.utils import checkout as checkout_util
 from bot.utils import tiers as tiers_util
 from bot.utils.helpers import RuntimeSettings, format_price, is_video_url
 
@@ -210,7 +211,17 @@ async def cleanup_dm_messages(bot, order_id: int) -> None:
     await orders_q.clear_dm_messages(db, order_id)
 
 
-async def _post_purchase_announcement(bot, order, product) -> None:
+def _order_title(items, product) -> str:
+    """Judul singkat isi order buat notifikasi: "N item" kalau banyak
+    produk, "3x Nama" kalau satu produk qty banyak, atau nama produknya."""
+    if items and len(items) > 1:
+        return f"{len(items)} item"
+    if items and items[0]["quantity"] > 1:
+        return f"{items[0]['quantity']}x {items[0]['product_name']}"
+    return product["name"] if product else "pembelian"
+
+
+async def _post_purchase_announcement(bot, order, product, items=None) -> None:
     """Posting kartu publik "Si X baru aja beli Y" ke channel purchase-feed
     yang diatur -- lihat /settings purchase_feed_channel. Diem-diem gak
     ngapa-ngapain kalau channel-nya belum diatur atau customer-nya gak bisa
@@ -262,7 +273,8 @@ async def _post_purchase_announcement(bot, order, product) -> None:
         badge_text = None
 
     layout = components.purchase_announcement_view(
-        buyer_display, buyer_avatar_url, product, category_type, order, profile=profile, badge_text=badge_text
+        buyer_display, buyer_avatar_url, product, category_type, order,
+        profile=profile, badge_text=badge_text, items=items,
     )
 
     try:
@@ -273,7 +285,7 @@ async def _post_purchase_announcement(bot, order, product) -> None:
         logger.exception("Gagal posting pengumuman pembelian buat order #%s.", order["id"])
 
 
-async def _notify_testi_proof(bot, order, product) -> None:
+async def _notify_testi_proof(bot, order, product, items=None) -> None:
     """Notifikasi internal ke staff pake bukti transfer yang customer
     kirim duluan pas checkout (URL-nya disimpen forward_to_staff() di
     atas) -- dikirim ke /settings testi_proof_channel begitu order
@@ -306,7 +318,7 @@ async def _notify_testi_proof(bot, order, product) -> None:
     price_text = format_price(order["total_price"], order["currency_label"])
     container = components.testi_proof_container(
         buyer_display=buyer_display,
-        product_name=product["name"],
+        product_name=_order_title(items, product),
         price_text=price_text,
         testi_number=order["id"],
         photo_url=proof_url,
@@ -383,9 +395,15 @@ async def mark_completed(bot, order_id: int, actor: discord.abc.User | None = No
 
     runtime = RuntimeSettings(db)
 
-    await orders_q.set_order_status(db, order_id, "completed")
-    if order["status"] != "completed":  # klik ganda gak boleh dihitung dua kali
-        await order_events.record(db, order_id, "completed", actor)
+    # Transisi ATOMIK: cuma satu pemanggil yang bisa nge-complete order ini.
+    # Klik ganda / tombol + /order barengan sebelumnya bikin invoice,
+    # pengumuman, review prompt, dan Noctoins kekirim lebih dari sekali.
+    if not await orders_q.transition_status(db, order_id, "completed", ("pending", "processing")):
+        return False, (
+            f"Order #{order_id} udah berstatus **{order['status']}**, "
+            "jadi gak bisa ditandain selesai lagi."
+        )
+    await order_events.record(db, order_id, "completed", actor)
     if order["payment_status"] != "paid":
         # Order yang selesai otomatis berarti udah lunas -- tanpa ini,
         # staff yang klik "Mark Completed" tanpa klik "Mark Paid" duluan
@@ -400,7 +418,11 @@ async def mark_completed(bot, order_id: int, actor: discord.abc.User | None = No
     await cleanup_dm_messages(bot, order_id)
 
     product = await products_q.get_product(db, order["product_id"])
-    product_name = product["name"] if product else "pembelian kamu"
+    items = await orders_q.list_order_items(db, order_id)
+    if len(items) > 1:
+        product_name = f"pesanan kamu ({len(items)} item)"
+    else:
+        product_name = product["name"] if product else "pembelian kamu"
     payment = (
         await payments_q.get_payment_method(db, order["payment_method_id"])
         if order["payment_method_id"]
@@ -410,7 +432,9 @@ async def mark_completed(bot, order_id: int, actor: discord.abc.User | None = No
     # Ambil avatar bot langsung -- jadi kalau icon bot diganti, invoice ini
     # otomatis ikut sync tanpa perlu setting manual apapun.
     bot_avatar_url = bot.user.display_avatar.url if bot.user else None
-    invoice_layout = components.invoice_view(order, product, payment, bot_avatar_url=bot_avatar_url)
+    invoice_layout = components.invoice_view(
+        order, product, payment, bot_avatar_url=bot_avatar_url, items=items
+    )
     # Gak di-track -- invoice ini emang didesain buat nempel permanen
     # sebagai bukti pembelian customer, beda sama pesan lain di alur ini.
     await _notify_customer(bot, order["user_id"], layout=invoice_layout)
@@ -437,7 +461,7 @@ async def mark_completed(bot, order_id: int, actor: discord.abc.User | None = No
 
     # Posting pengumuman pembelian ke channel purchase-feed, kalau diatur.
     try:
-        await _post_purchase_announcement(bot, order, product)
+        await _post_purchase_announcement(bot, order, product, items)
     except Exception:  # noqa: BLE001
         logger.warning("Pengumuman pembelian gagal diem-diem abis order #%s.", order_id)
 
@@ -452,7 +476,7 @@ async def mark_completed(bot, order_id: int, actor: discord.abc.User | None = No
     # Notif "Testi Money" ke staff pake bukti transfer yang udah kesimpen,
     # kalau ada. Sama-sama non-blocking kayak pengumuman pembelian di atas.
     try:
-        await _notify_testi_proof(bot, order, product)
+        await _notify_testi_proof(bot, order, product, items)
     except Exception:  # noqa: BLE001
         logger.warning("Notifikasi Testi Money gagal diem-diem abis order #%s.", order_id)
 
@@ -493,13 +517,20 @@ async def cancel_order(bot, order_id: int, reason: str | None, actor: discord.ab
     if not order:
         return False, "Order gak ketemu."
 
-    await orders_q.set_order_status(db, order_id, "cancelled")
+    # Transisi ATOMIK -- order yang udah dibatalin/di-refund gak bisa
+    # diproses lagi, jadi saldo Credit/Noctoins/stok gak mungkin
+    # dibalikin dua kali (sebelumnya klik ganda atau cancel-abis-refund
+    # bisa ngembaliin saldo dobel). Boleh dari completed: staff emang
+    # kadang perlu ngebatalin order yang udah sempet ditandain selesai.
+    if not await orders_q.transition_status(
+        db, order_id, "cancelled", ("pending", "processing", "completed")
+    ):
+        return False, f"Order #{order_id} udah berstatus **{order['status']}**, gak bisa dibatalin lagi."
     await orders_q.set_payment_status(db, order_id, "cancelled")
-    if order["status"] != "cancelled":
-        await order_events.record(db, order_id, "cancelled", actor)
-    if order["stock_reserved"]:
-        await products_q.adjust_stock(db, order["product_id"], 1)
-        await orders_q.clear_stock_reserved(db, order_id)
+    await order_events.record(db, order_id, "cancelled", actor)
+    # Balikin stok PERSIS sebesar yang tercatat kepotong per item (satuan
+    # maupun tipe jumlah, pool produk maupun pool Product Type).
+    await checkout_util.release_order_stock(db, order_id)
 
     # Order yang dibayar pake Kartu NOCTRA udah LANGSUNG lunas (saldo
     # dipotong di tempat pas checkout) -- beda dari pembayaran manual yang
@@ -544,12 +575,12 @@ async def refund_order(bot, order_id: int, reason: str | None, actor: discord.ab
     if not order:
         return False, "Order gak ketemu."
 
-    await orders_q.set_order_status(db, order_id, "refunded")
-    if order["status"] != "refunded":
-        await order_events.record(db, order_id, "refunded", actor)
-    if order["stock_reserved"]:
-        await products_q.adjust_stock(db, order["product_id"], 1)
-        await orders_q.clear_stock_reserved(db, order_id)
+    if not await orders_q.transition_status(
+        db, order_id, "refunded", ("pending", "processing", "completed")
+    ):
+        return False, f"Order #{order_id} udah berstatus **{order['status']}**, gak bisa di-refund lagi."
+    await order_events.record(db, order_id, "refunded", actor)
+    await checkout_util.release_order_stock(db, order_id)
 
     # Sama kayak cancel_order -- kalau ini order Kartu NOCTRA, duitnya udah
     # ke-ambil di depan, jadi WAJIB dibalikin (plus Noctoins yang kepake).
