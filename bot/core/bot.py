@@ -15,6 +15,7 @@ from bot.database.core import Database
 EXTENSIONS = (
     "bot.cogs.category",
     "bot.cogs.category_type",
+    "bot.cogs.product_group",
     "bot.cogs.product",
     "bot.cogs.payment",
     "bot.cogs.settings",
