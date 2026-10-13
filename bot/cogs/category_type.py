@@ -241,7 +241,9 @@ class CategoryTypeCog(commands.Cog):
         validation: Validation | None = None,
     ) -> None:
         existing = await fields_q.get_field(self.bot.db, field_id)
-        if not existing or existing["category_type_id"] != category_type:
+        # Field milik Product Type (product_group_id terisi) diatur lewat
+        # /product_group field, bukan di sini.
+        if not existing or existing["category_type_id"] != category_type or existing["product_group_id"] is not None:
             await interaction.response.send_message(
                 embed=embeds.error_embed("Field gak ketemu di category type ini."), ephemeral=True
             )
@@ -268,7 +270,7 @@ class CategoryTypeCog(commands.Cog):
     @staff_only()
     async def field_remove(self, interaction: discord.Interaction, category_type: int, field_id: int) -> None:
         existing = await fields_q.get_field(self.bot.db, field_id)
-        if not existing or existing["category_type_id"] != category_type:
+        if not existing or existing["category_type_id"] != category_type or existing["product_group_id"] is not None:
             await interaction.response.send_message(
                 embed=embeds.error_embed("Field gak ketemu di category type ini."), ephemeral=True
             )
