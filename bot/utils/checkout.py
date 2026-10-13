@@ -264,12 +264,29 @@ async def add_to_cart(
 # DYNAMIC CHECKOUT FIELD (gabungan semua Category Type di keranjang)
 # ============================================================================
 
+def _with_suffix(label: str, name: str) -> str:
+    """label + " (name)" dipotong biar muat di batas label TextInput Discord."""
+    suffix = f" ({name})"
+    if len(label) + len(suffix) > MODAL_LABEL_MAX:
+        room = max(1, MODAL_LABEL_MAX - len(label) - 3)
+        suffix = f" ({name[:room]}\u2026)" if room > 1 else ""
+    return (label + suffix)[:MODAL_LABEL_MAX]
+
+
 async def collect_fields(db: Database, lines: list[CartLine]) -> list[dict]:
-    """Field checkout buat semua produk di `lines`. Field nempel di
-    Category Type, jadi tiap Category Type yang ada ditanyain SEKALI aja
-    walau ada beberapa produk darinya. Kalau keranjang nyampur lebih dari
-    satu Category Type yang punya field, label dikasih akhiran "(Nama
-    Tipe)" biar jawabannya gak ketuker (misal dua-duanya punya "Username").
+    """Field checkout buat semua produk di `lines`, dalam urutan: field
+    Category Type, lalu field TAMBAHAN Product Type-nya (kalau ada).
+
+    Tiap Category Type dan tiap Product Type ditanyain SEKALI aja walau ada
+    beberapa produk darinya. Field Product Type sifatnya tambahan -- gak
+    pernah ngegantiin field Category Type.
+
+    Label dikasih akhiran "(Nama)" HANYA kalau jawabannya bisa ketuker:
+      * keranjang nyampur lebih dari satu Category Type yang punya field
+        -> field tiap tipe dikasih akhiran nama tipenya;
+      * ada lebih dari satu Product Type yang punya field, ATAU label field
+        Product Type sama dengan label field lain
+        -> field Product Type dikasih akhiran nama Product Type-nya.
     Return list dict (siap dipake DynamicFieldsModal)."""
     type_ids: list[int] = []
     for line in lines:
@@ -277,24 +294,44 @@ async def collect_fields(db: Database, lines: list[CartLine]) -> list[dict]:
         if ct_id not in type_ids:
             type_ids.append(ct_id)
 
-    per_type: list[tuple[object, list]] = []
+    # (kind, nama_sumber, rows) urut: tipe, lalu Product Type di bawah tipe itu
+    sources: list[tuple[str, str, list]] = []
     for ct_id in type_ids:
-        fields = await fields_q.list_fields(db, ct_id)
-        if fields:
-            per_type.append((await category_types_q.get_category_type(db, ct_id), fields))
+        type_fields = await fields_q.list_fields(db, ct_id)
+        if type_fields:
+            category_type = await category_types_q.get_category_type(db, ct_id)
+            sources.append(("type", category_type["name"], type_fields))
 
-    prefix = len(per_type) > 1
+        seen_groups: list[int] = []
+        for line in lines:
+            if int(line.product["category_type_id"]) != ct_id or line.group is None:
+                continue
+            gid = int(line.group["id"])
+            if gid in seen_groups:
+                continue
+            seen_groups.append(gid)
+            group_fields = await fields_q.list_group_fields(db, gid)
+            if group_fields:
+                sources.append(("group", line.group["name"], group_fields))
+
+    prefix_types = sum(1 for kind, _, _ in sources if kind == "type") > 1
+    prefix_groups = sum(1 for kind, _, _ in sources if kind == "group") > 1
+    label_counts: dict[str, int] = {}
+    for _, _, rows in sources:
+        for f in rows:
+            key = f["label"].strip().lower()
+            label_counts[key] = label_counts.get(key, 0) + 1
+
     result: list[dict] = []
-    for category_type, fields in per_type:
-        for f in fields:
+    for kind, name, rows in sources:
+        for f in rows:
             row = dict(f)
-            if prefix:
-                suffix = f" ({category_type['name']})"
-                label = row["label"]
-                if len(label) + len(suffix) > MODAL_LABEL_MAX:
-                    room = max(1, MODAL_LABEL_MAX - len(label) - 3)
-                    suffix = f" ({category_type['name'][:room]}…)" if room > 1 else ""
-                row["label"] = (label + suffix)[:MODAL_LABEL_MAX]
+            if kind == "type" and prefix_types:
+                row["label"] = _with_suffix(row["label"], name)
+            elif kind == "group" and (prefix_groups or label_counts[f["label"].strip().lower()] > 1):
+                row["label"] = _with_suffix(row["label"], name)
+            else:
+                row["label"] = row["label"][:MODAL_LABEL_MAX]
             result.append(row)
     return result
 
