@@ -28,6 +28,7 @@ from bot.core.theme import (
     star_rating,
 )
 from bot.utils.helpers import calculate_final_price, discount_label, format_price
+from bot.utils.stock import format_stock, resolve_source
 
 
 def base_embed(
@@ -99,6 +100,33 @@ def category_type_list_embed(category_types: list) -> discord.Embed:
     return embed
 
 
+def product_group_list_embed(groups: list) -> discord.Embed:
+    """Daftar Product Type (staff) -- /product_group list."""
+    embed = base_embed("NOCTRA -- Product Type", color=COLOR_PRIMARY)
+    if not groups:
+        embed.description = "Belum ada Product Type yang dibuat nih."
+        return embed
+    lines = []
+    for g in groups:
+        state = "aktif" if g["enabled"] else "nonaktif"
+        emoji_prefix = f"{g['emoji']} " if g["emoji"] else ""
+        if g["shared_stock"]:
+            unit = f" {g['stock_label']}" if g["stock_label"] else ""
+            mode = "jumlah" if g["stock_mode"] == "amount" else "satuan"
+            stock = f"stok bersama ({mode}): {g['stock_quantity']:,}{unit}"
+        else:
+            stock = "stok per produk"
+        lines.append(
+            f"{MARK_BULLET} {emoji_prefix}**#{g['id']} -- {g['name']}** "
+            f"{MARK_DASH} tipe #{g['category_type_id']} {MARK_DASH} posisi {g['position']} "
+            f"{MARK_DASH} {state} {MARK_DASH} {stock}"
+        )
+        if g["description"]:
+            lines.append(f"    {g['description']}")
+    embed.description = "\n".join(lines)
+    return embed
+
+
 def product_summary_line(product, rating_summary: dict | None = None) -> str:
     final = calculate_final_price(
         product["base_price"], product["discount_type"], product["discount_value"]
@@ -115,17 +143,54 @@ def product_summary_line(product, rating_summary: dict | None = None) -> str:
     return f"{MARK_BULLET} {emoji_prefix}**{product['name']}**{visibility} {MARK_DASH} {price_text}{rating_text}"
 
 
-def product_list_embed(category_type, products: list) -> discord.Embed:
+def product_list_embed(
+    category_type, products: list, group=None, *, other_label: str | None = None
+) -> discord.Embed:
+    """`group` = Product Type yang lagi dibuka (judul jadi "Tipe > Product
+    Type"). `other_label` dipake buat daftar "Lainnya" (produk yang gak
+    masuk Product Type manapun) di Category Type yang punya Product Type."""
     if category_type:
         emoji_prefix = f"{category_type['emoji']} " if category_type["emoji"] else ""
         title = f"NOCTRA -- {emoji_prefix}{category_type['name']}"
     else:
         title = "NOCTRA -- Produk"
+    if group is not None:
+        g_emoji = f"{group['emoji']} " if group["emoji"] else ""
+        title += f" \u203a {g_emoji}{group['name']}"
+    elif other_label:
+        title += f" \u203a {other_label}"
     embed = base_embed(title, color=COLOR_PRIMARY)
     if not products:
-        embed.description = "Belum ada produk di tipe kategori ini."
+        embed.description = "Belum ada produk di sini."
         return embed
     embed.description = "\n".join(product_summary_line(p) for p in products)
+    return embed
+
+
+def product_admin_list_embed(category_type, products: list, groups_by_id: dict) -> discord.Embed:
+    """Daftar produk buat STAFF -- nambahin ID, Product Type, dan stok
+    (termasuk tipe stok) biar keliatan konfigurasinya sekilas."""
+    title = f"NOCTRA -- {category_type['name']}" if category_type else "NOCTRA -- Produk"
+    embed = base_embed(title, color=COLOR_PRIMARY)
+    if not products:
+        embed.description = "Belum ada produk di sini."
+        return embed
+    lines = []
+    for p in products:
+        group = groups_by_id.get(p["product_group_id"]) if p["product_group_id"] else None
+        stock = format_stock(resolve_source(p, group))
+        if p["stock_mode"] == "amount" and (group is None or not group["shared_stock"]) and p["stock_type"] == "manual":
+            stock += f" ({p['stock_cost']:,}/qty)"
+        elif group is not None and group["shared_stock"] and group["stock_mode"] == "amount":
+            stock += f" ({p['stock_cost']:,}/qty)"
+        group_text = f" {MARK_DASH} {group['name']}" if group else ""
+        final = calculate_final_price(p["base_price"], p["discount_type"], p["discount_value"])
+        visibility = "" if p["visible"] else " [disembunyikan]"
+        lines.append(
+            f"{MARK_BULLET} **#{p['id']} {p['name']}**{visibility}{group_text} {MARK_DASH} "
+            f"{format_price(final, p['currency_label'])} {MARK_DASH} {stock}"
+        )
+    embed.description = "\n".join(lines)[:4000]
     return embed
 
 
@@ -140,12 +205,27 @@ def order_summary_embed(
     product_row,
     payment_row,
     field_values: list | None = None,
+    items: list | None = None,
 ) -> discord.Embed:
+    """`items` = baris order_items (keranjang multi-produk). Kalau order
+    cuma 1 produk x 1 qty tampilannya sama persis kayak sebelumnya; kalau
+    lebih, field "Produk" jadi "Item" yang nampilin daftar lengkap."""
     status = order_row["status"]
     color = STATUS_COLORS.get(status, COLOR_PRIMARY)
     embed = base_embed(f"Order #{order_row['id']}", color=color)
 
-    embed.add_field(name="Produk", value=product_row["name"], inline=True)
+    multi = bool(items) and (len(items) > 1 or items[0]["quantity"] > 1)
+    if multi:
+        lines = [
+            f"{MARK_BULLET} {it['quantity']}x **{it['product_name']}** {MARK_DASH} "
+            f"{format_price(it['line_total'], order_row['currency_label'])}"
+            for it in items[:15]
+        ]
+        if len(items) > 15:
+            lines.append(f"-# ...dan {len(items) - 15} lainnya")
+        embed.add_field(name=f"Item ({len(items)})", value="\n".join(lines)[:1024], inline=False)
+    else:
+        embed.add_field(name="Produk", value=product_row["name"], inline=True)
     embed.add_field(
         name="Harga",
         value=format_price(order_row["total_price"], order_row["currency_label"]),

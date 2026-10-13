@@ -28,6 +28,7 @@ Persistent views/items (survive restart bot):
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 
 import discord
@@ -35,11 +36,13 @@ import discord
 from bot.core.logger import logger
 from bot.core.theme import COLOR_ACCENT
 from bot.database.queries import (
+    cart as cart_q,
     categories as categories_q,
     category_types as category_types_q,
     fields as fields_q,
     orders as orders_q,
     payments as payments_q,
+    product_groups as product_groups_q,
     products as products_q,
     reviews as reviews_q,
     tickets as tickets_q,
@@ -51,10 +54,18 @@ from bot.database.queries import leaderboard as lb_q
 from bot.database.queries import roblox_listings as roblox_q
 from bot.database.queries import ticket_types as ticket_types_q
 from bot.ui import components, embeds
-from bot.ui.modals import MessageModal, ReasonModal, ReviewTextModal, collect_dynamic_fields
+from bot.ui.modals import (
+    MessageModal,
+    QuantityModal,
+    ReasonModal,
+    ReviewTextModal,
+    collect_dynamic_fields,
+)
 from bot.utils import card_actions, order_actions, review_actions, ticket_actions
-from bot.utils.helpers import RuntimeSettings, calculate_final_price, format_price
+from bot.utils import checkout as checkout_util
+from bot.utils.helpers import RuntimeSettings, format_price
 from bot.utils.permissions import is_staff
+from bot.utils.stock import resolve_source
 from bot.utils.validators import FieldValidationError, parse_hex_color, validate_field_value
 
 MAX_SELECT_OPTIONS = 25
@@ -113,6 +124,68 @@ class CategoryBrowseView(discord.ui.View):
     def __init__(self, categories: list):
         super().__init__(timeout=300)
         self.add_item(CategorySelect(categories))
+        self.add_item(CartButton())
+
+
+async def _type_level_payload(db, category_type) -> tuple[discord.Embed, discord.ui.View]:
+    """Tampilan setelah customer milih Category Type. Kalau Category Type
+    ini punya Product Type aktif -> pilih Product Type dulu (plus opsi
+    "Lainnya" buat produk yang gak masuk Product Type manapun). Kalau gak
+    punya -> langsung daftar produk, persis kayak sebelum fitur Product
+    Type ada."""
+    groups = await product_groups_q.list_product_groups(
+        db, category_type_id=category_type["id"], enabled_only=True
+    )
+    if groups:
+        ungrouped = await products_q.list_products(
+            db, category_type_id=category_type["id"], visible_only=True, ungrouped=True
+        )
+        emoji_prefix = f"{category_type['emoji']} " if category_type["emoji"] else ""
+        embed = embeds.base_embed(
+            f"NOCTRA -- {emoji_prefix}{category_type['name']}",
+            "Pilih tipe produk di bawah.",
+            color=COLOR_ACCENT,
+        )
+        return embed, ProductGroupBrowseView(category_type, groups, has_ungrouped=bool(ungrouped))
+    products = await products_q.list_products(
+        db, category_type_id=category_type["id"], visible_only=True, browsable_only=True
+    )
+    return embeds.product_list_embed(category_type, products), ProductBrowseView(category_type, products)
+
+
+async def _group_products_payload(db, category_type, group) -> tuple[discord.Embed, discord.ui.View]:
+    """Daftar produk di satu Product Type. `group` None = "Lainnya"
+    (produk yang gak masuk Product Type manapun)."""
+    if group is not None:
+        products = await products_q.list_products(
+            db, category_type_id=category_type["id"], visible_only=True, product_group_id=group["id"]
+        )
+        embed = embeds.product_list_embed(category_type, products, group=group)
+    else:
+        products = await products_q.list_products(
+            db, category_type_id=category_type["id"], visible_only=True, ungrouped=True
+        )
+        embed = embeds.product_list_embed(category_type, products, other_label="Lainnya")
+    return embed, ProductBrowseView(category_type, products, back_to_groups=True)
+
+
+async def _product_back_payload(db, product) -> tuple[discord.Embed, discord.ui.View]:
+    """Tujuan tombol Kembali dari detail produk: balik ke daftar produk
+    tempat produk ini tadi dipilih (Product Type-nya, "Lainnya", atau
+    daftar langsung di Category Type)."""
+    category_type = await category_types_q.get_category_type(db, product["category_type_id"])
+    group = (
+        await product_groups_q.get_product_group(db, product["product_group_id"])
+        if product["product_group_id"] else None
+    )
+    if group is not None and group["enabled"]:
+        return await _group_products_payload(db, category_type, group)
+    enabled_groups = await product_groups_q.list_product_groups(
+        db, category_type_id=category_type["id"], enabled_only=True
+    )
+    if enabled_groups:
+        return await _group_products_payload(db, category_type, None)
+    return await _type_level_payload(db, category_type)
 
 
 class CategoryTypeSelect(discord.ui.Select):
@@ -130,11 +203,8 @@ class CategoryTypeSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         db = interaction.client.db  # type: ignore[attr-defined]
-        category_type_id = int(self.values[0])
-        category_type = await category_types_q.get_category_type(db, category_type_id)
-        products = await products_q.list_products(db, category_type_id=category_type_id, visible_only=True)
-        embed = embeds.product_list_embed(category_type, products)
-        view = ProductBrowseView(category_type, products)
+        category_type = await category_types_q.get_category_type(db, int(self.values[0]))
+        embed, view = await _type_level_payload(db, category_type)
         await interaction.response.edit_message(embed=embed, view=view)
 
 
@@ -158,6 +228,57 @@ class CategoryTypeBrowseView(discord.ui.View):
         if category_types:
             self.add_item(CategoryTypeSelect(category_types))
         self.add_item(BackToCategoriesButton())
+        self.add_item(CartButton())
+
+
+class ProductGroupSelect(discord.ui.Select):
+    """Pilih Product Type (opsional) di dalam satu Category Type."""
+
+    OTHER_VALUE = "none"
+
+    def __init__(self, category_type, groups: list, has_ungrouped: bool):
+        self.category_type = category_type
+        options = [
+            discord.SelectOption(
+                label=g["name"][:100],
+                value=str(g["id"]),
+                description=(g["description"] or "")[:100] or None,
+                emoji=g["emoji"] or None,
+            )
+            for g in groups[: MAX_SELECT_OPTIONS - (1 if has_ungrouped else 0)]
+        ]
+        if has_ungrouped:
+            options.append(discord.SelectOption(label="Lainnya", value=self.OTHER_VALUE))
+        super().__init__(placeholder="Pilih tipe produk...", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        db = interaction.client.db  # type: ignore[attr-defined]
+        category_type = await category_types_q.get_category_type(db, self.category_type["id"])
+        group = None
+        if self.values[0] != self.OTHER_VALUE:
+            group = await product_groups_q.get_product_group(db, int(self.values[0]))
+        embed, view = await _group_products_payload(db, category_type, group)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class BackToProductGroupsButton(discord.ui.Button):
+    def __init__(self, category_type_id: int) -> None:
+        super().__init__(label="Kembali", style=discord.ButtonStyle.secondary)
+        self.category_type_id = category_type_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        db = interaction.client.db  # type: ignore[attr-defined]
+        category_type = await category_types_q.get_category_type(db, self.category_type_id)
+        embed, view = await _type_level_payload(db, category_type)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class ProductGroupBrowseView(discord.ui.View):
+    def __init__(self, category_type, groups: list, has_ungrouped: bool = False) -> None:
+        super().__init__(timeout=300)
+        self.add_item(ProductGroupSelect(category_type, groups, has_ungrouped))
+        self.add_item(BackToCategoryTypesButton(category_type["category_id"]))
+        self.add_item(CartButton())
 
 
 class ProductSelect(discord.ui.Select):
@@ -174,9 +295,13 @@ class ProductSelect(discord.ui.Select):
         db = interaction.client.db  # type: ignore[attr-defined]
         product_id = int(self.values[0])
         product = await products_q.get_product(db, product_id)
+        group = (
+            await product_groups_q.get_product_group(db, product["product_group_id"])
+            if product["product_group_id"] else None
+        )
         fields = await fields_q.list_fields(db, product["category_type_id"])
         rating_summary = await reviews_q.get_rating_summary(db, product_id)
-        view = ProductDetailView(product, fields, rating_summary)
+        view = ProductDetailView(product, fields, rating_summary, group)
         # Discord ngewajibin embed lama di-clear eksplisit pas pesan pindah
         # ke Components V2 -- kalau enggak, edit-nya ditolak dan interaction
         # timeout ("didn't respond in time") tanpa pesan error yang jelas.
@@ -202,20 +327,112 @@ class BackToCategoryTypesButton(discord.ui.Button):
 
 
 class ProductBrowseView(discord.ui.View):
-    def __init__(self, category_type, products: list) -> None:
+    """Daftar produk. `back_to_groups` True = daftar ini dibuka dari pilihan
+    Product Type, jadi Kembali balik ke pilihan Product Type (bukan ke
+    daftar Category Type)."""
+
+    def __init__(self, category_type, products: list, *, back_to_groups: bool = False) -> None:
         super().__init__(timeout=300)
         if products:
             self.add_item(ProductSelect(products))
-        self.add_item(BackToCategoryTypesButton(category_type["category_id"] if category_type else 0))
+        if back_to_groups and category_type:
+            self.add_item(BackToProductGroupsButton(category_type["id"]))
+        else:
+            self.add_item(BackToCategoryTypesButton(category_type["category_id"] if category_type else 0))
+        self.add_item(CartButton())
 
 
-class BuyButton(discord.ui.Button):
-    def __init__(self, product) -> None:
-        super().__init__(label="Beli Sekarang", style=discord.ButtonStyle.success)
-        self.product = product
+# ============================================================================
+# DETAIL PRODUK (Components V2) -- stepper jumlah, keranjang, beli langsung
+# ============================================================================
+
+def _detail_max_quantity(product, group) -> int:
+    """Qty maksimal yang bisa dipilih di detail produk: sisa stok (dibagi
+    stock_cost buat tipe jumlah), dibatesin checkout_util.MAX_LINE_QTY."""
+    limit = resolve_source(product, group).max_quantity()
+    return checkout_util.MAX_LINE_QTY if limit is None else min(checkout_util.MAX_LINE_QTY, limit)
+
+
+async def _render_detail(interaction: discord.Interaction, product_id: int, quantity: int) -> None:
+    """Gambar ulang kartu detail produk dengan jumlah baru (edit in-place).
+    Dipake tombol +/- dan modal ketik jumlah."""
+    db = interaction.client.db  # type: ignore[attr-defined]
+    product = await products_q.get_product(db, product_id)
+    if product is None:
+        await interaction.response.send_message(
+            embed=embeds.error_embed("Produk ini udah gak ada."), ephemeral=True
+        )
+        return
+    group = (
+        await product_groups_q.get_product_group(db, product["product_group_id"])
+        if product["product_group_id"] else None
+    )
+    fields = await fields_q.list_fields(db, product["category_type_id"])
+    rating_summary = await reviews_q.get_rating_summary(db, product_id)
+    view = ProductDetailView(product, fields, rating_summary, group, quantity)
+    await interaction.response.edit_message(view=view)
+
+
+class QtyStepButton(discord.ui.Button):
+    def __init__(self, product_id: int, quantity: int, delta: int, *, disabled: bool) -> None:
+        super().__init__(
+            emoji="\u2795" if delta > 0 else "\u2796",
+            style=discord.ButtonStyle.secondary,
+            disabled=disabled,
+        )
+        self.product_id = product_id
+        self.quantity = quantity
+        self.delta = delta
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await start_purchase(interaction, self.product["id"])
+        await _render_detail(interaction, self.product_id, self.quantity + self.delta)
+
+
+class QtyValueButton(discord.ui.Button):
+    """Tombol tengah: nunjukin jumlah sekarang, diklik buat ngetik angka langsung."""
+
+    def __init__(self, product_id: int, quantity: int, max_quantity: int, *, disabled: bool) -> None:
+        super().__init__(
+            label=f"{quantity}", emoji="\u270F\uFE0F", style=discord.ButtonStyle.primary, disabled=disabled
+        )
+        self.product_id = product_id
+        self.quantity = quantity
+        self.max_quantity = max_quantity
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        async def on_submit(inter: discord.Interaction, amount: int) -> None:
+            await _render_detail(inter, self.product_id, amount)
+
+        await interaction.response.send_modal(
+            QuantityModal("Jumlah Beli", self.quantity, self.max_quantity, on_submit)
+        )
+
+
+class AddToCartButton(discord.ui.Button):
+    def __init__(self, product_id: int, quantity: int, *, disabled: bool) -> None:
+        super().__init__(
+            label="Tambah ke Keranjang", emoji="\U0001F6D2", style=discord.ButtonStyle.success, disabled=disabled
+        )
+        self.product_id = product_id
+        self.quantity = quantity
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        db = interaction.client.db  # type: ignore[attr-defined]
+        ok, message = await checkout_util.add_to_cart(db, interaction.user.id, self.product_id, self.quantity)
+        embed = embeds.success_embed(message) if ok else embeds.error_embed(message)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class BuyNowButton(discord.ui.Button):
+    """Beli produk INI aja (sejumlah yang dipilih), tanpa nyentuh isi keranjang."""
+
+    def __init__(self, product_id: int, quantity: int, *, disabled: bool) -> None:
+        super().__init__(label="Beli Sekarang", style=discord.ButtonStyle.primary, disabled=disabled)
+        self.product_id = product_id
+        self.quantity = quantity
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await start_purchase(interaction, self.product_id, self.quantity)
 
 
 class BackFromProductDetailButton(discord.ui.Button):
@@ -223,40 +440,263 @@ class BackFromProductDetailButton(discord.ui.Button):
     ngebolehin ngedit pesan yang udah kepake Components V2 balik ke embed
     klasik (batasan permanen dari API-nya, bukan bug) -- jadi daripada
     edit_message() pesan kartu ini, tombol ini kirim pesan ephemeral BARU
-    yang isinya browsing embed klasik. Kartu V2 yang lama dibiarin apa
-    adanya (customer bisa dismiss sendiri lewat "Dismiss message")."""
+    yang isinya daftar produk (embed klasik) tempat produk ini tadi dipilih.
+    Kartu V2 yang lama dibiarin apa adanya (customer bisa dismiss sendiri
+    lewat "Dismiss message")."""
 
-    def __init__(self, category_id: int) -> None:
+    def __init__(self, product_id: int) -> None:
         super().__init__(label="Kembali", style=discord.ButtonStyle.secondary)
-        self.category_id = category_id
+        self.product_id = product_id
 
     async def callback(self, interaction: discord.Interaction) -> None:
         db = interaction.client.db  # type: ignore[attr-defined]
-        category = await categories_q.get_category(db, self.category_id)
-        category_types = await category_types_q.list_category_types(db, category_id=self.category_id, enabled_only=True)
-        embed = embeds.base_embed(
-            f"NOCTRA -- {category['emoji'] + ' ' if category and category['emoji'] else ''}{category['name'] if category else ''}",
-            "Pilih tipe di bawah buat liat produknya.",
-            color=COLOR_ACCENT,
-        )
-        view = CategoryTypeBrowseView(category, category_types)
+        product = await products_q.get_product(db, self.product_id)
+        if product is None:
+            categories = await categories_q.list_categories(db, enabled_only=True)
+            embed = embeds.base_embed(
+                "NOCTRA STORE", "Pilih kategori di bawah buat liat produk yang ada.", color=COLOR_ACCENT
+            )
+            await interaction.response.send_message(
+                embed=embed, view=CategoryBrowseView(categories), ephemeral=True
+            )
+            return
+        embed, view = await _product_back_payload(db, product)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 class ProductDetailView(discord.ui.LayoutView):
-    """Kartu detail produk -- Components V2. Isinya (harga/tipe/stok/rating)
-    dibangun sama components.product_detail_container(), tombol Beli
-    Sekarang & Kembali ditempel di sini soalnya butuh callback yang nyambung
-    ke alur checkout/browsing lain."""
+    """Kartu detail produk -- Components V2. Isinya (harga/tipe/stok/rating/
+    jumlah) dibangun components.product_detail_container(); tombol
+    ditempel di sini soalnya butuh callback yang nyambung ke alur
+    keranjang/checkout/browsing lain.
 
-    def __init__(self, product, fields: list, rating_summary: dict) -> None:
+    Baris 1: [-] [jumlah, klik buat ngetik] [+]
+    Baris 2: [Tambah ke Keranjang] [Beli Sekarang] [Keranjang] [Kembali]"""
+
+    def __init__(self, product, fields: list, rating_summary: dict, group=None, quantity: int = 1) -> None:
         super().__init__(timeout=300)
-        container = components.product_detail_container(product, fields, rating_summary)
+        max_qty = _detail_max_quantity(product, group)
+        sold_out = max_qty <= 0
+        quantity = max(1, min(int(quantity), max(1, max_qty)))
+        pid = int(product["id"])
+
+        container = components.product_detail_container(product, fields, rating_summary, group, quantity)
         container.add_item(
             discord.ui.ActionRow(
-                BuyButton(product),
-                BackFromProductDetailButton(product["category_type_id"]),
+                QtyStepButton(pid, quantity, -1, disabled=sold_out or quantity <= 1),
+                QtyValueButton(pid, quantity, max(1, max_qty), disabled=sold_out),
+                QtyStepButton(pid, quantity, +1, disabled=sold_out or quantity >= max_qty),
             )
+        )
+        container.add_item(
+            discord.ui.ActionRow(
+                AddToCartButton(pid, quantity, disabled=sold_out),
+                BuyNowButton(pid, quantity, disabled=sold_out),
+                CartButton(from_v2=True),
+                BackFromProductDetailButton(pid),
+            )
+        )
+        self.add_item(container)
+
+
+# ============================================================================
+# KERANJANG (Components V2, ephemeral) -- isinya disimpen di DB (cart_items)
+# ============================================================================
+
+class CartButton(discord.ui.Button):
+    """Buka keranjang. `from_v2` True kalau tombol ini ada di pesan
+    Components V2 (detail produk) -- bedanya cuma di cara ngedit pesannya
+    (pesan embed klasik harus di-clear embed-nya dulu, pesan V2 gak boleh
+    dikirimin field embed sama sekali)."""
+
+    def __init__(self, *, from_v2: bool = False) -> None:
+        super().__init__(label="Keranjang", emoji="\U0001F6D2", style=discord.ButtonStyle.secondary)
+        self.from_v2 = from_v2
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await open_cart(interaction, mode="edit" if self.from_v2 else "convert")
+
+
+async def open_cart(interaction: discord.Interaction, *, mode: str = "send") -> None:
+    """mode: "send" = pesan ephemeral baru (/cart); "convert" = ubah pesan
+    embed klasik jadi keranjang V2; "edit" = edit pesan V2 yang udah ada."""
+    db = interaction.client.db  # type: ignore[attr-defined]
+    lines = await checkout_util.load_cart(db, interaction.user.id)
+    view = CartView(interaction.user.id, lines)
+    if mode == "convert":
+        await interaction.response.edit_message(embed=None, view=view)
+    elif mode == "edit":
+        await interaction.response.edit_message(view=view)
+    else:
+        await interaction.response.send_message(view=view, ephemeral=True)
+
+
+async def _refresh_cart(interaction: discord.Interaction, page: int = 0, notice: str | None = None) -> None:
+    db = interaction.client.db  # type: ignore[attr-defined]
+    lines = await checkout_util.load_cart(db, interaction.user.id)
+    await interaction.response.edit_message(view=CartView(interaction.user.id, lines, page, notice))
+
+
+class CartQtyStepButton(discord.ui.Button):
+    def __init__(self, product_id: int, quantity: int, delta: int, page: int, *, disabled: bool) -> None:
+        super().__init__(
+            emoji="\u2795" if delta > 0 else "\u2796",
+            style=discord.ButtonStyle.secondary,
+            disabled=disabled,
+        )
+        self.product_id = product_id
+        self.quantity = quantity
+        self.delta = delta
+        self.page = page
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        db = interaction.client.db  # type: ignore[attr-defined]
+        ok, problem = await checkout_util.try_set_quantity(
+            db, interaction.user.id, self.product_id, self.quantity + self.delta
+        )
+        await _refresh_cart(interaction, self.page, None if ok else problem)
+
+
+class CartQtyValueButton(discord.ui.Button):
+    """Jumlah item ini; diklik buat ngetik angka langsung."""
+
+    def __init__(self, product_id: int, name: str, quantity: int, max_quantity: int, page: int) -> None:
+        super().__init__(label=f"{quantity}", emoji="\u270F\uFE0F", style=discord.ButtonStyle.primary)
+        self.product_id = product_id
+        self.name = name
+        self.quantity = quantity
+        self.max_quantity = max_quantity
+        self.page = page
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        async def on_submit(inter: discord.Interaction, amount: int) -> None:
+            db = inter.client.db  # type: ignore[attr-defined]
+            ok, problem = await checkout_util.try_set_quantity(db, inter.user.id, self.product_id, amount)
+            await _refresh_cart(inter, self.page, None if ok else problem)
+
+        await interaction.response.send_modal(
+            QuantityModal(f"Jumlah: {self.name}", self.quantity, max(1, self.max_quantity), on_submit)
+        )
+
+
+class CartRemoveButton(discord.ui.Button):
+    def __init__(self, product_id: int, page: int) -> None:
+        super().__init__(emoji="\U0001F5D1\uFE0F", style=discord.ButtonStyle.danger)
+        self.product_id = product_id
+        self.page = page
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        db = interaction.client.db  # type: ignore[attr-defined]
+        await cart_q.remove(db, interaction.user.id, self.product_id)
+        await _refresh_cart(interaction, self.page, "Item dihapus dari keranjang.")
+
+
+class CartPageButton(discord.ui.Button):
+    def __init__(self, page: int, direction: int, *, disabled: bool) -> None:
+        super().__init__(
+            emoji="\u25C0\uFE0F" if direction < 0 else "\u25B6\uFE0F",
+            style=discord.ButtonStyle.secondary,
+            disabled=disabled,
+        )
+        self.target_page = page + direction
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await _refresh_cart(interaction, self.target_page)
+
+
+class CartCheckoutButton(discord.ui.Button):
+    def __init__(self, *, disabled: bool) -> None:
+        super().__init__(label="Checkout", style=discord.ButtonStyle.success, disabled=disabled)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        db = interaction.client.db  # type: ignore[attr-defined]
+        lines = await checkout_util.load_cart(db, interaction.user.id)
+        if not lines:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Keranjang kamu kosong."), ephemeral=True
+            )
+            return
+        request = checkout_util.CheckoutRequest(
+            tuple((l.product_id, l.quantity) for l in lines), from_cart=True
+        )
+        await start_checkout(interaction, request)
+
+
+class CartContinueShoppingButton(discord.ui.Button):
+    """Pesan keranjang itu Components V2, jadi gak bisa diedit balik jadi
+    embed klasik -- kirim pesan ephemeral baru yang isinya katalog."""
+
+    def __init__(self) -> None:
+        super().__init__(label="Belanja Lagi", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        db = interaction.client.db  # type: ignore[attr-defined]
+        categories = await categories_q.list_categories(db, enabled_only=True)
+        embed = embeds.base_embed(
+            "NOCTRA STORE", "Pilih kategori di bawah buat liat produk yang ada.", color=COLOR_ACCENT
+        )
+        if not categories:
+            embed.description = "Toko belum ada kategori yang aktif nih. Cek lagi nanti ya."
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        await interaction.response.send_message(embed=embed, view=CategoryBrowseView(categories), ephemeral=True)
+
+
+class CartClearButton(discord.ui.Button):
+    def __init__(self, *, disabled: bool) -> None:
+        super().__init__(label="Kosongkan", style=discord.ButtonStyle.danger, disabled=disabled)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        db = interaction.client.db  # type: ignore[attr-defined]
+        await cart_q.clear(db, interaction.user.id)
+        await _refresh_cart(interaction, 0, "Keranjang dikosongin.")
+
+
+class CartView(discord.ui.LayoutView):
+    """Keranjang belanja. Tiap item punya baris tombol sendiri: [-] [jumlah,
+    klik buat ngetik] [+] [hapus]. 4 item per halaman biar tetep di bawah
+    batas 40 komponen per pesan Discord (lihat components.cart_container)."""
+
+    def __init__(
+        self, user_id: int, lines: list, page: int = 0, notice: str | None = None
+    ) -> None:
+        super().__init__(timeout=600)
+        size = components.CART_PAGE_SIZE
+        total_pages = max(1, math.ceil(len(lines) / size))
+        page = max(0, min(page, total_pages - 1))
+        page_lines = lines[page * size:(page + 1) * size]
+
+        # Peringatan global (misal campur mata uang) nempel di notice.
+        global_problem = checkout_util.currency_problem(lines)
+        if global_problem and not notice:
+            notice = global_problem
+
+        def controls(line) -> discord.ui.ActionRow:
+            return discord.ui.ActionRow(
+                CartQtyStepButton(line.product_id, line.quantity, -1, page, disabled=line.quantity <= 1),
+                CartQtyValueButton(line.product_id, line.name, line.quantity, line.max_quantity(), page),
+                CartQtyStepButton(
+                    line.product_id, line.quantity, +1, page,
+                    disabled=bool(line.problem) or line.quantity >= line.max_quantity(),
+                ),
+                CartRemoveButton(line.product_id, page),
+            )
+
+        blocked = bool(lines) and checkout_util.first_problem(lines) is not None
+        footer_buttons: list[discord.ui.Button] = []
+        if total_pages > 1:
+            footer_buttons.append(CartPageButton(page, -1, disabled=page <= 0))
+            footer_buttons.append(CartPageButton(page, +1, disabled=page >= total_pages - 1))
+        footer_buttons.append(CartCheckoutButton(disabled=not lines or blocked))
+        footer_buttons.append(CartContinueShoppingButton())
+        footer_buttons.append(CartClearButton(disabled=not lines))
+
+        container = components.cart_container(
+            page_lines,
+            line_controls=controls,
+            summary_text=components.cart_summary_text(lines, page, total_pages),
+            footer_row=discord.ui.ActionRow(*footer_buttons),
+            notice=notice,
         )
         self.add_item(container)
 
@@ -331,26 +771,39 @@ class ShopPanelView(discord.ui.LayoutView):
 # WIZARD PEMBELIAN (berbasis DM)
 # ============================================================================
 
-async def start_purchase(interaction: discord.Interaction, product_id: int) -> None:
+async def start_purchase(interaction: discord.Interaction, product_id: int, quantity: int = 1) -> None:
+    """Beli langsung SATU produk (/buy, tombol Beli Sekarang) -- keranjang
+    gak disentuh."""
+    await start_checkout(interaction, checkout_util.CheckoutRequest(((int(product_id), int(quantity)),)))
+
+
+async def start_checkout(interaction: discord.Interaction, request: checkout_util.CheckoutRequest) -> None:
+    """Awal checkout buat satu atau banyak produk: validasi, terus kirim
+    DM "Lanjutin Order" (semua langkah berikutnya jalan di DM)."""
     db = interaction.client.db  # type: ignore[attr-defined]
-    product = await products_q.get_product(db, product_id)
-    if not product or not product["visible"]:
+    lines = await checkout_util.build_lines(
+        db, request.lines, drop_missing_for=interaction.user.id if request.from_cart else None
+    )
+    if not lines:
         await interaction.response.send_message(
-            embed=embeds.error_embed("Produk ini lagi gak tersedia."), ephemeral=True
+            embed=embeds.error_embed("Produknya lagi gak tersedia."), ephemeral=True
         )
         return
-    if product["stock_type"] == "manual" and product["stock_quantity"] <= 0:
-        await interaction.response.send_message(
-            embed=embeds.error_embed("Stok produk ini lagi abis."), ephemeral=True
-        )
+    problem = checkout_util.first_problem(lines)
+    if problem:
+        await interaction.response.send_message(embed=embeds.error_embed(problem), ephemeral=True)
         return
 
+    currency = lines[0].currency
+    summary = checkout_util.describe_lines(lines)
+    total = format_price(checkout_util.subtotal(lines), currency)
     dm_channel = await interaction.user.create_dm()
     embed = embeds.info_embed(
-        "Lanjutin Order Kamu", f"Klik di bawah buat lanjutin pesen **{product['name']}**."
+        "Lanjutin Order Kamu",
+        f"Klik di bawah buat lanjutin pesen:\n{summary}\n\n**Total: {total}**",
     )
     try:
-        await dm_channel.send(embed=embed, view=ContinueOrderView(product))
+        await dm_channel.send(embed=embed, view=ContinueOrderView(request))
     except discord.Forbidden:
         await interaction.response.send_message(
             embed=embeds.error_embed(
@@ -387,27 +840,34 @@ class ContinueOrderButton(discord.ui.Button):
     dibuka buat checkout fields, soalnya Discord cuma ngebolehin buka Modal
     sebagai respon ke interaction komponen, gak bisa dari pesan bot biasa."""
 
-    def __init__(self, product) -> None:
+    def __init__(self, request: checkout_util.CheckoutRequest) -> None:
         super().__init__(label="Lanjutin Order", style=discord.ButtonStyle.success)
-        self.product = product
+        self.request = request
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await proceed_to_fields(interaction, self.product)
+        await proceed_to_fields(interaction, self.request)
         await _delete_source_message(interaction)
 
 
 class ContinueOrderView(discord.ui.View):
-    def __init__(self, product) -> None:
+    def __init__(self, request: checkout_util.CheckoutRequest) -> None:
         super().__init__(timeout=600)
-        self.add_item(ContinueOrderButton(product))
+        self.add_item(ContinueOrderButton(request))
 
 
-async def proceed_to_fields(interaction: discord.Interaction, product) -> None:
+async def proceed_to_fields(interaction: discord.Interaction, request: checkout_util.CheckoutRequest) -> None:
     db = interaction.client.db  # type: ignore[attr-defined]
-    fields = await fields_q.list_fields(db, product["category_type_id"])
 
+    # Validasi ulang -- stok/harga/ketersediaan bisa berubah sejak prompt DM dikirim.
+    lines = await checkout_util.build_lines(db, request.lines)
+    problem = "Produknya lagi gak tersedia." if not lines else checkout_util.first_problem(lines)
+    if problem:
+        await interaction.response.send_message(embed=embeds.error_embed(problem), ephemeral=False)
+        return
+
+    fields = await checkout_util.collect_fields(db, lines)
     if not fields:
-        await proceed_to_payment(interaction, product, [])
+        await proceed_to_payment(interaction, request, [])
         return
 
     async def on_fields_complete(inter: discord.Interaction, values_by_id: dict) -> None:
@@ -429,16 +889,22 @@ async def proceed_to_fields(interaction: discord.Interaction, product) -> None:
                 errors.append(str(exc))
 
         if errors:
+            # Prompt "Lanjutin Order" yang tadi udah kehapus, jadi kasih
+            # lagi biar customer bisa ngulang tanpa harus mulai dari toko.
             await inter.response.send_message(
-                embed=embeds.error_embed("\n".join(errors)), ephemeral=False
+                embed=embeds.error_embed("\n".join(errors)),
+                view=ContinueOrderView(request),
+                ephemeral=False,
             )
             return
-        await proceed_to_payment(inter, product, cleaned)
+        await proceed_to_payment(inter, request, cleaned)
 
     await collect_dynamic_fields(interaction, fields, on_fields_complete)
 
 
-async def proceed_to_payment(interaction: discord.Interaction, product, field_values: list) -> None:
+async def proceed_to_payment(
+    interaction: discord.Interaction, request: checkout_util.CheckoutRequest, field_values: list
+) -> None:
     if not interaction.response.is_done():
         await interaction.response.defer(ephemeral=False, thinking=True)
 
@@ -471,17 +937,17 @@ async def proceed_to_payment(interaction: discord.Interaction, product, field_va
         return
 
     if len(methods) == 1:
-        await finalize_order(interaction, product, field_values, methods[0])
+        await finalize_order(interaction, request, field_values, methods[0])
         return
 
     embed = embeds.info_embed("Pilih Metode Pembayaran", "Pilih cara kamu mau bayar.")
-    view = PaymentSelectView(product, field_values, methods)
+    view = PaymentSelectView(request, field_values, methods)
     await interaction.followup.send(embed=embed, view=view, ephemeral=False)
 
 
 class PaymentSelect(discord.ui.Select):
-    def __init__(self, product, field_values: list, methods: list):
-        self.product = product
+    def __init__(self, request: checkout_util.CheckoutRequest, field_values: list, methods: list):
+        self.request = request
         self.field_values = field_values
         self.method_map = {str(m["id"]): m for m in methods}
         options = [
@@ -492,25 +958,67 @@ class PaymentSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         method = self.method_map[self.values[0]]
-        await finalize_order(interaction, self.product, self.field_values, method)
+        await finalize_order(interaction, self.request, self.field_values, method)
         await _delete_source_message(interaction)
 
 
 class PaymentSelectView(discord.ui.View):
-    def __init__(self, product, field_values: list, methods: list) -> None:
+    def __init__(self, request: checkout_util.CheckoutRequest, field_values: list, methods: list) -> None:
         super().__init__(timeout=180)
-        self.add_item(PaymentSelect(product, field_values, methods))
+        self.add_item(PaymentSelect(request, field_values, methods))
+
+
+async def _create_order(
+    db,
+    user_id: int,
+    items: list[dict],
+    payment_method_id,
+    currency: str,
+    timeout_minutes,
+    *,
+    subtotal: float,
+    field_values: list,
+    **order_kwargs,
+) -> int | None:
+    """Bikin order + item + field checkout. Stok udah kepotong sebelum ini
+    (lewat checkout_util.reserve_lines), jadi kalau apapun gagal di tengah:
+    order setengah jadi dihapus dan stok dibalikin, return None -- caller
+    tinggal ngasih tau customer."""
+    order_id = None
+    try:
+        order_id = await orders_q.create_order_with_items(
+            db, user_id, items, payment_method_id, currency, timeout_minutes,
+            subtotal=subtotal, **order_kwargs,
+        )
+        for fv in field_values:
+            await orders_q.add_field_value(db, order_id, fv["label"], fv["field_type"], fv["value"])
+        return order_id
+    except Exception:  # noqa: BLE001
+        logger.exception("Gagal bikin order buat user %s.", user_id)
+        if order_id is not None:
+            await db.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+        await checkout_util.release_reserved(db, items)
+        return None
 
 
 async def _finalize_credit_order(
-    interaction: discord.Interaction, db, product, field_values: list, unit_price: float
+    interaction: discord.Interaction,
+    db,
+    request: checkout_util.CheckoutRequest,
+    lines: list,
+    field_values: list,
+    subtotal: float,
 ) -> None:
     """Cabang finalize_order() KHUSUS bayar pake Kartu NOCTRA -- beda dari
     pembayaran manual yang nunggu bukti transfer + approve staff, order ini
     LANGSUNG lunas (saldo dipotong di tempat), jadi gak ada langkah "kirim
     bukti" sama sekali. Noctoins yang customer punya OTOMATIS kepake abis
-    buat motong harga (sesuai batas saldo Noctoin & harga produk), gak ada
-    opsi milih sebagian."""
+    buat motong harga (sesuai batas saldo Noctoin & total belanja), gak ada
+    opsi milih sebagian.
+
+    Urutan aman: stok dipotong dulu (atomik), baru saldo (atomik, ditolak
+    kalau gak cukup), baru order dibuat -- tiap langkah yang gagal
+    ngebalikin langkah sebelumnya."""
     card = await cards_q.get_card_by_user(db, interaction.user.id)
     if not card:
         # Race kondisi langka -- kartu kehapus/gak ada pas mereka mencet opsi ini.
@@ -520,15 +1028,15 @@ async def _finalize_credit_order(
         return
 
     runtime = RuntimeSettings(db)
-    currency = await runtime.default_currency()
+    currency = lines[0].currency
     rate = await runtime.card_noctoin_rate()
 
     noctoins_used = 0
     if rate > 0 and card["noctoins"] > 0:
-        max_affordable = int(unit_price // rate)
+        max_affordable = int(subtotal // rate)
         noctoins_used = min(card["noctoins"], max_affordable)
     discount = noctoins_used * rate
-    final_price = unit_price - discount
+    final_price = round(subtotal - discount, 2)
 
     if card["credit_balance"] < final_price:
         await interaction.followup.send(
@@ -540,34 +1048,50 @@ async def _finalize_credit_order(
         )
         return
 
-    stock_reserved = False
-    if product["stock_type"] == "manual":
-        fresh = await products_q.get_product(db, product["id"])
-        if fresh["stock_quantity"] <= 0:
-            await interaction.followup.send(
-                embed=embeds.error_embed("Yah, produk ini baru aja abis stoknya."), ephemeral=False
-            )
-            return
-        await products_q.adjust_stock(db, product["id"], -1)
-        stock_reserved = True
+    reserved_ok, reserve_error, items = await checkout_util.reserve_lines(db, lines)
+    if not reserved_ok:
+        await interaction.followup.send(embed=embeds.error_embed(reserve_error), ephemeral=False)
+        return
 
-    await cards_q.deduct_credit(db, interaction.user.id, final_price)
-    if noctoins_used:
-        await cards_q.deduct_noctoins(db, interaction.user.id, noctoins_used)
+    if not await cards_q.try_deduct_credit(db, interaction.user.id, final_price):
+        await checkout_util.release_reserved(db, items)
+        await interaction.followup.send(
+            embed=embeds.error_embed("Saldo Credit kamu baru aja berubah dan gak cukup lagi. Coba lagi ya."),
+            ephemeral=False,
+        )
+        return
+    if noctoins_used and not await cards_q.try_deduct_noctoins(db, interaction.user.id, noctoins_used):
+        await cards_q.add_credit(db, interaction.user.id, final_price)
+        await checkout_util.release_reserved(db, items)
+        await interaction.followup.send(
+            embed=embeds.error_embed("Noctoins kamu baru aja berubah. Coba lagi ya."), ephemeral=False
+        )
+        return
 
-    order_id = await orders_q.create_order(
-        db, interaction.user.id, product["id"], None, unit_price, product["currency_label"],
-        stock_reserved, None,
+    order_id = await _create_order(
+        db, interaction.user.id, items, None, currency, None,
+        subtotal=subtotal, field_values=field_values,
         total_price=final_price, paid_with_credit=True, noctoins_used=noctoins_used,
     )
+    if order_id is None:
+        # _create_order udah ngebalikin stok -- tinggal ngebalikin saldo/Noctoins.
+        await cards_q.add_credit(db, interaction.user.id, final_price)
+        if noctoins_used:
+            await cards_q.add_noctoins(db, interaction.user.id, noctoins_used)
+        await interaction.followup.send(
+            embed=embeds.error_embed("Order gagal dibuat -- saldo kamu udah dibalikin. Coba lagi ya."),
+            ephemeral=False,
+        )
+        return
     await orders_q.set_payment_status(db, order_id, "paid")
-
-    for fv in field_values:
-        await orders_q.add_field_value(db, order_id, fv["label"], fv["field_type"], fv["value"])
+    if request.from_cart:
+        await cart_q.remove_many(db, interaction.user.id, [l.product_id for l in lines])
 
     order_row = await orders_q.get_order(db, order_id)
     saved_fields = await orders_q.get_field_values(db, order_id)
-    order_embed = embeds.order_summary_embed(order_row, product, None, saved_fields)
+    item_rows = await orders_q.list_order_items(db, order_id)
+    primary = lines[0].product
+    order_embed = embeds.order_summary_embed(order_row, primary, None, saved_fields, item_rows)
 
     note = f"Dibayar otomatis pake **Kartu NOCTRA** -- {format_price(final_price, currency)}."
     if noctoins_used:
@@ -591,7 +1115,7 @@ async def _finalize_credit_order(
     if log_channel_id:
         log_channel = interaction.client.get_channel(log_channel_id)
         if isinstance(log_channel, discord.TextChannel):
-            staff_embed = embeds.order_summary_embed(order_row, product, None, saved_fields)
+            staff_embed = embeds.order_summary_embed(order_row, primary, None, saved_fields, item_rows)
             staff_embed.add_field(
                 name="Customer", value=f"<@{interaction.user.id}> ({interaction.user})", inline=False
             )
@@ -605,45 +1129,54 @@ async def _finalize_credit_order(
                 logger.exception("Gagal posting order Kartu #%s ke channel order-log.", order_id)
 
 
-async def finalize_order(interaction: discord.Interaction, product, field_values: list, payment) -> None:
+async def finalize_order(
+    interaction: discord.Interaction,
+    request: checkout_util.CheckoutRequest,
+    field_values: list,
+    payment,
+) -> None:
     if not interaction.response.is_done():
         await interaction.response.defer(ephemeral=False, thinking=True)
 
     db = interaction.client.db  # type: ignore[attr-defined]
-    unit_price = calculate_final_price(product["base_price"], product["discount_type"], product["discount_value"])
+
+    # Harga & stok dihitung ULANG dari data terbaru, bukan dari tampilan
+    # sebelumnya -- bisa aja udah berubah selama customer ngisi data.
+    lines = await checkout_util.build_lines(db, request.lines)
+    problem = "Produknya lagi gak tersedia." if not lines else checkout_util.first_problem(lines)
+    if problem:
+        await interaction.followup.send(embed=embeds.error_embed(problem), ephemeral=False)
+        return
+    subtotal = checkout_util.subtotal(lines)
+    currency = lines[0].currency
 
     if payment["id"] == "credit":
-        await _finalize_credit_order(interaction, db, product, field_values, unit_price)
+        await _finalize_credit_order(interaction, db, request, lines, field_values, subtotal)
         return
 
-    stock_reserved = False
-    if product["stock_type"] == "manual":
-        fresh = await products_q.get_product(db, product["id"])
-        if fresh["stock_quantity"] <= 0:
-            await interaction.followup.send(
-                embed=embeds.error_embed("Yah, produk ini baru aja abis stoknya."), ephemeral=False
-            )
-            return
-        await products_q.adjust_stock(db, product["id"], -1)
-        stock_reserved = True
+    reserved_ok, reserve_error, items = await checkout_util.reserve_lines(db, lines)
+    if not reserved_ok:
+        await interaction.followup.send(embed=embeds.error_embed(reserve_error), ephemeral=False)
+        return
 
-    order_id = await orders_q.create_order(
-        db,
-        interaction.user.id,
-        product["id"],
-        payment["id"],
-        unit_price,
-        product["currency_label"],
-        stock_reserved,
-        payment["timeout_minutes"],
+    order_id = await _create_order(
+        db, interaction.user.id, items, payment["id"], currency, payment["timeout_minutes"],
+        subtotal=subtotal, field_values=field_values,
     )
-
-    for fv in field_values:
-        await orders_q.add_field_value(db, order_id, fv["label"], fv["field_type"], fv["value"])
+    if order_id is None:
+        await interaction.followup.send(
+            embed=embeds.error_embed("Order gagal dibuat. Coba lagi ya, kalau masih gagal hubungin staff."),
+            ephemeral=False,
+        )
+        return
+    if request.from_cart:
+        await cart_q.remove_many(db, interaction.user.id, [l.product_id for l in lines])
 
     order_row = await orders_q.get_order(db, order_id)
     saved_fields = await orders_q.get_field_values(db, order_id)
-    order_embed = embeds.order_summary_embed(order_row, product, payment, saved_fields)
+    item_rows = await orders_q.list_order_items(db, order_id)
+    primary = lines[0].product
+    order_embed = embeds.order_summary_embed(order_row, primary, payment, saved_fields, item_rows)
 
     reply_embeds = [order_embed]
     if payment["instructions"] or payment["image_url"]:
@@ -680,7 +1213,7 @@ async def finalize_order(interaction: discord.Interaction, product, field_values
     if log_channel_id:
         log_channel = interaction.client.get_channel(log_channel_id)
         if isinstance(log_channel, discord.TextChannel):
-            staff_embed = embeds.order_summary_embed(order_row, product, payment, saved_fields)
+            staff_embed = embeds.order_summary_embed(order_row, primary, payment, saved_fields, item_rows)
             staff_embed.add_field(name="Customer", value=f"<@{interaction.user.id}> ({interaction.user})", inline=False)
             staff_view = discord.ui.View(timeout=None)
             for action in ("mark_paid", "mark_completed", "cancel", "refund"):
@@ -690,6 +1223,7 @@ async def finalize_order(interaction: discord.Interaction, product, field_values
                 await log_channel.send(embed=staff_embed, view=staff_view)
             except discord.HTTPException:
                 logger.exception("Gagal posting order #%s ke channel order-log.", order_id)
+
 
 # ============================================================================
 # KONTROL TICKET (persistent)

@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 import discord
 
 from bot.database.queries.fields import MODAL_BATCH_SIZE
+from bot.ui import embeds
 
 MULTILINE_TYPES = {"login", "custom"}
 
@@ -170,3 +171,40 @@ class MessageModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await self._on_submit_callback(interaction, str(self.message.value).strip())
+
+
+class QuantityModal(discord.ui.Modal):
+    """Satu field angka buat ngetik jumlah langsung (kalau mau beli
+    banyak, lebih cepet daripada neken tombol tambah berkali-kali). Dipake
+    di detail produk dan di tiap baris keranjang. Angka yang kegedean
+    otomatis dijepit ke `max_quantity` (ngetik 500 pas sisa 12 jadi 12)."""
+
+    def __init__(
+        self,
+        title: str,
+        current: int,
+        max_quantity: int,
+        on_submit_callback: Callable[[discord.Interaction, int], Awaitable[None]],
+    ) -> None:
+        super().__init__(title=title[:45])
+        self._max = max_quantity
+        self._on_submit_callback = on_submit_callback
+        self.amount = discord.ui.TextInput(
+            label=f"Jumlah (1-{max_quantity})"[:45],
+            style=discord.TextStyle.short,
+            required=True,
+            min_length=1,
+            max_length=4,
+            placeholder="Contoh: 5",
+            default=str(current),
+        )
+        self.add_item(self.amount)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        raw = str(self.amount.value).strip()
+        if not raw.isdigit() or int(raw) < 1:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Jumlah harus angka bulat minimal 1."), ephemeral=True
+            )
+            return
+        await self._on_submit_callback(interaction, min(int(raw), self._max))

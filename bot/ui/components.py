@@ -42,6 +42,7 @@ from bot.core.theme import (
     star_rating,
 )
 from bot.utils.helpers import calculate_final_price, discount_label, format_price
+from bot.utils.stock import format_stock, resolve_source
 
 
 class NoctraLayout(discord.ui.LayoutView):
@@ -106,8 +107,11 @@ def invoice_view(
     product_row,
     payment_row,
     bot_avatar_url: str | None = None,
+    items: list | None = None,
 ) -> discord.ui.LayoutView:
-    """Struk yang dikirim begitu order ditandain selesai. `bot_avatar_url`
+    """Struk yang dikirim begitu order ditandain selesai. `items` = baris
+    order_items; kalau order-nya multi-item / qty > 1, "Barang" nampilin
+    daftar lengkap (qty x nama). `bot_avatar_url`
     diambil langsung dari foto profil bot -- ganti icon bot, struk ini
     otomatis ikut ganti, gak perlu setting manual apapun."""
     invoice_number = f"NOCTRA-{order_row['id']:06d}"
@@ -122,7 +126,17 @@ def invoice_view(
         else header_text
     )
 
-    lines = [f"**Barang**\n{product_row['name']}"]
+    if items and (len(items) > 1 or items[0]["quantity"] > 1):
+        barang = "\n".join(
+            f"{it['quantity']}x {it['product_name']} {MARK_DASH} "
+            f"{format_price(it['line_total'], order_row['currency_label'])}"
+            for it in items[:15]
+        )
+        if len(items) > 15:
+            barang += f"\n-# ...dan {len(items) - 15} lainnya"
+        lines = [f"**Barang ({len(items)})**\n{barang}"]
+    else:
+        lines = [f"**Barang**\n{product_row['name']}"]
     lines.append(f"**Total Bayar**\n{format_price(order_row['total_price'], order_row['currency_label'])}")
     if payment_row:
         lines.append(f"**Metode Bayar**\n{payment_row['name']}")
@@ -188,8 +202,11 @@ def purchase_announcement_view(
     order_row,
     profile: dict | None = None,
     badge_text: str | None = None,
+    items: list | None = None,
 ) -> discord.ui.LayoutView:
     """Kartu publik "Si X baru aja beli Y" buat channel purchase-feed.
+    `items` = baris order_items; kalau lebih dari satu item, headline jadi
+    "N item" dan detail pesanan nampilin daftarnya.
 
     `profile` = hasil bot.database.queries.leaderboard.get_spender_profile()
     (total belanja, peringkat, dst) -- None kalau pembeli dikecualiin dari
@@ -218,7 +235,14 @@ def purchase_announcement_view(
             tag = f"{tag}  {MARK_DASH}  {_safe(badge_text)}"
         header_lines.append(f"-# {tag}")
     header_lines.append(f"## {EMOJI_SUCCESS} Pembelian Baru")
-    header_lines.append(f"**{_safe(buyer_display)}** baru aja beli **{product_row['name']}**!")
+    multi = bool(items) and (len(items) > 1 or items[0]["quantity"] > 1)
+    if multi and len(items) > 1:
+        headline = f"**{len(items)} item**"
+    elif multi:
+        headline = f"**{items[0]['quantity']}x {items[0]['product_name']}**"
+    else:
+        headline = f"**{product_row['name']}**"
+    header_lines.append(f"**{_safe(buyer_display)}** baru aja beli {headline}!")
     header_text = discord.ui.TextDisplay("\n".join(header_lines))
     product_image = product_row["image_url"] or None
     header = (
@@ -241,7 +265,14 @@ def purchase_announcement_view(
 
     # -- Detail pesanan
     type_label = product_row["product_type"].replace("_", " ").title()
-    detail_lines = ["### Detail Pesanan", f"{MARK_BULLET} **Produk** : {product_row['name']}"]
+    detail_lines = ["### Detail Pesanan"]
+    if multi:
+        for it in items[:10]:
+            detail_lines.append(f"{MARK_BULLET} {it['quantity']}x **{it['product_name']}**")
+        if len(items) > 10:
+            detail_lines.append(f"-# ...dan {len(items) - 10} lainnya")
+    else:
+        detail_lines.append(f"{MARK_BULLET} **Produk** : {product_row['name']}")
     if category_type_row:
         cat_emoji = f"{category_type_row['emoji']} " if category_type_row["emoji"] else ""
         detail_lines.append(f"{MARK_BULLET} **Kategori** : {cat_emoji}{category_type_row['name']}")
@@ -283,10 +314,14 @@ def purchase_announcement_view(
 
 # -- Detail produk --------------------------------------------------------------
 
-def product_detail_container(product, fields: list, rating_summary: dict) -> discord.ui.Container:
+def product_detail_container(
+    product, fields: list, rating_summary: dict, group=None, quantity: int = 1
+) -> discord.ui.Container:
     """Return Container aja (bukan LayoutView lengkap) -- caller (views.py)
-    yang nempelin ActionRow tombol Beli Sekarang / Kembali, soalnya tombol
-    itu butuh callback yang nyambung ke alur checkout lain."""
+    yang nempelin ActionRow tombol (stepper jumlah, Tambah ke Keranjang,
+    Beli Sekarang, dst), soalnya tombol itu butuh callback yang nyambung
+    ke alur keranjang/checkout. `group` = Product Type produk ini (buat
+    nentuin sumber stok), `quantity` = jumlah yang lagi dipilih."""
     final = calculate_final_price(product["base_price"], product["discount_type"], product["discount_value"])
     price_text = format_price(final, product["currency_label"])
     dlabel = discount_label(product["discount_type"], product["discount_value"])
@@ -304,10 +339,15 @@ def product_detail_container(product, fields: list, rating_summary: dict) -> dis
     if dlabel:
         price_line += f"  {MARK_DASH}  {dlabel} (awalnya {format_price(product['base_price'], product['currency_label'])})"
     type_label = product["product_type"].replace("_", " ").title()
-    stock_text = "Unlimited" if product["stock_type"] == "unlimited" else f"Sisa {product['stock_quantity']}"
+    source = resolve_source(product, group)
+    stock_text = format_stock(source, with_cost=True)
+    group_text = ""
+    if group is not None:
+        g_emoji = f"{group['emoji']} " if group["emoji"] else ""
+        group_text = f"**Product Type**\n{g_emoji}{group['name']}\n\n"
 
     info_block = discord.ui.TextDisplay(
-        f"**Harga**\n{price_line}\n\n**Tipe**\n{type_label}\n\n**Stok**\n{stock_text}"
+        f"**Harga**\n{price_line}\n\n{group_text}**Tipe**\n{type_label}\n\n**Stok**\n{stock_text}"
     )
 
     children: list = [
@@ -335,10 +375,80 @@ def product_detail_container(product, fields: list, rating_summary: dict) -> dis
         rating_text = "Belum ada ulasan nih."
     children.append(discord.ui.TextDisplay(f"**Rating**\n{rating_text}"))
 
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+    subtotal = format_price(round(final * quantity, 2), product["currency_label"])
+    qty_text = f"**Jumlah**\n{quantity}x  {MARK_DASH}  Subtotal **{subtotal}**"
+    max_qty = source.max_quantity()
+    if max_qty is not None and quantity >= max_qty:
+        qty_text += "\n-# Sudah mentok di sisa stok."
+    children.append(discord.ui.TextDisplay(qty_text))
+
     children.append(discord.ui.Separator(visible=False))
     children.append(discord.ui.TextDisplay(_footer_line()))
 
     return discord.ui.Container(*children, accent_colour=COLOR_PRIMARY)
+
+
+# -- Keranjang -----------------------------------------------------------------
+
+CART_PAGE_SIZE = 4
+
+
+def cart_container(
+    lines: list,
+    *,
+    line_controls,
+    summary_text: str,
+    footer_row: discord.ui.ActionRow,
+    notice: str | None = None,
+) -> discord.ui.Container:
+    """Container keranjang. `lines` = CartLine (bot.utils.checkout) buat
+    halaman ini SAJA; `line_controls(line) -> ActionRow` ngasih baris
+    tombol per item (kurang / jumlah / tambah / hapus), `summary_text`
+    ringkasan total (lihat cart_summary_text) dan `footer_row` baris
+    tombol bawah (navigasi, checkout, dst) -- tombolnya dibangun views.py
+    karena butuh callback.
+
+    Batas Discord: maksimal 40 komponen per pesan (semua yang nested
+    ikut kehitung). Per item = teks(1) + baris(1) + 4 tombol = 6, jadi 4
+    item per halaman = 24, plus header/ringkasan/footer masih aman di
+    bawah 40."""
+    children: list = []
+    head = "## \U0001F6D2 Keranjang Kamu"
+    if notice:
+        head += f"\n> {notice}"
+    children.append(discord.ui.TextDisplay(head))
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+    if not lines:
+        children.append(discord.ui.TextDisplay("Keranjang kamu masih kosong. Yuk jelajahin toko dulu!"))
+    for line in lines:
+        text = f"**{line.name}**\n{line.quantity}x @ {format_price(line.unit_price, line.currency)}  {MARK_DASH}  **{format_price(line.line_total, line.currency)}**"
+        if line.problem:
+            text += f"\n\u26A0\uFE0F {line.problem}"
+        children.append(discord.ui.TextDisplay(text))
+        children.append(line_controls(line))
+
+    children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+    children.append(discord.ui.TextDisplay(summary_text))
+    children.append(footer_row)
+    return discord.ui.Container(*children, accent_colour=COLOR_PRIMARY)
+
+
+def cart_summary_text(all_lines: list, page: int, total_pages: int) -> str:
+    """Ringkasan total SELURUH keranjang (bukan cuma halaman ini)."""
+    if not all_lines:
+        return _footer_line("Belum ada item")
+    currency = all_lines[0].currency
+    total = round(sum(l.line_total for l in all_lines), 2)
+    qty = sum(l.quantity for l in all_lines)
+    summary = (
+        f"**Total ({len(all_lines)} produk, {qty} item)**\n"
+        f"**{format_price(total, currency)}**"
+    )
+    if total_pages > 1:
+        summary += f"\n-# Halaman {page + 1}/{total_pages}"
+    return summary
 
 
 # -- Sambutan Member Baru --------------------------------------------------------
