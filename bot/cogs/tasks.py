@@ -16,10 +16,10 @@ from discord.ext import commands, tasks
 from bot.core.logger import logger
 from bot.database.queries import giveaways as giveaways_q
 from bot.database.queries import orders as orders_q
-from bot.database.queries import products as products_q
 from bot.database.queries import reviews as reviews_q
 from bot.database.queries import tickets as tickets_q
 from bot.ui import embeds
+from bot.utils import checkout as checkout_util
 from bot.utils import giveaway_actions, ticket_actions
 from bot.utils.helpers import RuntimeSettings
 
@@ -45,9 +45,9 @@ class TasksCog(commands.Cog):
             expired = await orders_q.list_expired_pending_payments(db)
             for order in expired:
                 await orders_q.set_payment_status(db, order["id"], "expired")
-                if order["stock_reserved"]:
-                    await products_q.adjust_stock(db, order["product_id"], 1)
-                    await orders_q.clear_stock_reserved(db, order["id"])
+                # Balikin stok sesuai yang tercatat kepotong per item
+                # (aman dipanggil ulang -- cuma jalan sekali per order).
+                await checkout_util.release_order_stock(db, order["id"])
                 try:
                     user = self.bot.get_user(order["user_id"]) or await self.bot.fetch_user(order["user_id"])
                     await user.send(

@@ -10,7 +10,7 @@ from bot.core.theme import COLOR_ACCENT
 from bot.database.queries import categories as categories_q
 from bot.database.queries import products as products_q
 from bot.ui import embeds
-from bot.ui.views import CategoryBrowseView, start_purchase
+from bot.ui.views import CategoryBrowseView, open_cart, start_purchase
 
 
 async def _visible_product_autocomplete(
@@ -45,11 +45,24 @@ class ShopCog(commands.Cog):
         )
 
     @app_commands.command(name="buy", description="Beli produk langsung.")
-    @app_commands.describe(product="Produk yang mau kamu beli")
+    @app_commands.describe(
+        product="Produk yang mau kamu beli",
+        quantity="Jumlah yang mau dibeli (default 1)",
+    )
     @app_commands.autocomplete(product=_visible_product_autocomplete)
     @app_commands.guild_only()
-    async def buy(self, interaction: discord.Interaction, product: int) -> None:
-        await start_purchase(interaction, product)
+    async def buy(
+        self,
+        interaction: discord.Interaction,
+        product: int,
+        quantity: app_commands.Range[int, 1, 99] = 1,
+    ) -> None:
+        await start_purchase(interaction, product, quantity)
+
+    @app_commands.command(name="cart", description="Liat dan atur keranjang belanja kamu.")
+    @app_commands.guild_only()
+    async def cart(self, interaction: discord.Interaction) -> None:
+        await open_cart(interaction, mode="send")
 
 
 async def setup(bot: commands.Bot) -> None:

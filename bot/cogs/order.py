@@ -34,7 +34,8 @@ class OrderCog(commands.Cog):
         product = await products_q.get_product(db, order["product_id"])
         payment = await payments_q.get_payment_method(db, order["payment_method_id"]) if order["payment_method_id"] else None
         field_values = await orders_q.get_field_values(db, order_id)
-        return embeds.order_summary_embed(order, product, payment, field_values)
+        items = await orders_q.list_order_items(db, order_id)
+        return embeds.order_summary_embed(order, product, payment, field_values, items)
 
     @order_group.command(name="view", description="Liat detail lengkap suatu order.")
     @app_commands.describe(order="Order yang mau dilihat")
