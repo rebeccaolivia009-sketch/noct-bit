@@ -66,6 +66,7 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)",
             "CREATE INDEX IF NOT EXISTS idx_cart_items_user ON cart_items(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_fields_category_type ON product_fields(category_type_id)",
+            "CREATE INDEX IF NOT EXISTS idx_fields_group ON product_fields(product_group_id)",
             "CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status, payment_status)",
             "CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status)",
@@ -174,6 +175,8 @@ class Database:
             ("products", "stock_mode", "ALTER TABLE products ADD COLUMN stock_mode TEXT NOT NULL DEFAULT 'unit'"),
             ("products", "stock_cost", "ALTER TABLE products ADD COLUMN stock_cost INTEGER NOT NULL DEFAULT 1"),
             ("products", "stock_label", "ALTER TABLE products ADD COLUMN stock_label TEXT"),
+            # Field checkout TAMBAHAN per Product Type (opsional). NULL = field Category Type, kayak sebelumnya.
+            ("product_fields", "product_group_id", "ALTER TABLE product_fields ADD COLUMN product_group_id INTEGER REFERENCES product_groups(id) ON DELETE CASCADE"),
             ("reviews", "image_url", "ALTER TABLE reviews ADD COLUMN image_url TEXT"),
             ("reviews", "awaiting_photo", "ALTER TABLE reviews ADD COLUMN awaiting_photo INTEGER NOT NULL DEFAULT 0"),
             ("reviews", "awaiting_photo_since", "ALTER TABLE reviews ADD COLUMN awaiting_photo_since TEXT"),

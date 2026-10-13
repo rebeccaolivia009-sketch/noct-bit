@@ -84,6 +84,10 @@ CREATE TABLE IF NOT EXISTS products (
 CREATE TABLE IF NOT EXISTS product_fields (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     category_type_id  INTEGER NOT NULL REFERENCES category_types(id) ON DELETE CASCADE,
+    -- NULL = field Category Type (berlaku buat SEMUA produk di tipe itu).
+    -- Terisi = field TAMBAHAN khusus Product Type itu (opsional); category_type_id
+    -- tetep diisi tipe induk Product Type-nya.
+    product_group_id  INTEGER REFERENCES product_groups(id) ON DELETE CASCADE,
     label             TEXT NOT NULL,
     field_type        TEXT NOT NULL DEFAULT 'custom',  -- username|userid|login|email|password|serverid|gameid|custom
     required          INTEGER NOT NULL DEFAULT 1,
