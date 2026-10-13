@@ -299,7 +299,9 @@ class ProductSelect(discord.ui.Select):
             await product_groups_q.get_product_group(db, product["product_group_id"])
             if product["product_group_id"] else None
         )
-        fields = await fields_q.list_fields(db, product["category_type_id"])
+        fields = await fields_q.list_fields_for_product(
+            db, product["category_type_id"], product["product_group_id"]
+        )
         rating_summary = await reviews_q.get_rating_summary(db, product_id)
         view = ProductDetailView(product, fields, rating_summary, group)
         # Discord ngewajibin embed lama di-clear eksplisit pas pesan pindah
@@ -367,7 +369,9 @@ async def _render_detail(interaction: discord.Interaction, product_id: int, quan
         await product_groups_q.get_product_group(db, product["product_group_id"])
         if product["product_group_id"] else None
     )
-    fields = await fields_q.list_fields(db, product["category_type_id"])
+    fields = await fields_q.list_fields_for_product(
+        db, product["category_type_id"], product["product_group_id"]
+    )
     rating_summary = await reviews_q.get_rating_summary(db, product_id)
     view = ProductDetailView(product, fields, rating_summary, group, quantity)
     await interaction.response.edit_message(view=view)
