@@ -46,6 +46,7 @@ class Database:
         await self.conn.commit()
         await self._migrate_category_hierarchy()
         await self._run_migrations()
+        await self._backfill_order_items()
         await self._create_indexes()
         logger.info("Database schema ensured.")
 
@@ -60,6 +61,10 @@ class Database:
         statements = [
             "CREATE INDEX IF NOT EXISTS idx_category_types_category ON category_types(category_id)",
             "CREATE INDEX IF NOT EXISTS idx_products_category_type ON products(category_type_id)",
+            "CREATE INDEX IF NOT EXISTS idx_products_group ON products(product_group_id)",
+            "CREATE INDEX IF NOT EXISTS idx_product_groups_type ON product_groups(category_type_id)",
+            "CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)",
+            "CREATE INDEX IF NOT EXISTS idx_cart_items_user ON cart_items(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_fields_category_type ON product_fields(category_type_id)",
             "CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status, payment_status)",
@@ -163,6 +168,12 @@ class Database:
             ("payment_methods", "image_url", "ALTER TABLE payment_methods ADD COLUMN image_url TEXT"),
             ("categories", "emoji", "ALTER TABLE categories ADD COLUMN emoji TEXT"),
             ("products", "emoji", "ALTER TABLE products ADD COLUMN emoji TEXT"),
+            # Product Type (opsional) + tipe stok (satuan / jumlah). Default-nya
+            # nyamain perilaku lama persis, jadi produk yang udah ada gak berubah.
+            ("products", "product_group_id", "ALTER TABLE products ADD COLUMN product_group_id INTEGER REFERENCES product_groups(id) ON DELETE SET NULL"),
+            ("products", "stock_mode", "ALTER TABLE products ADD COLUMN stock_mode TEXT NOT NULL DEFAULT 'unit'"),
+            ("products", "stock_cost", "ALTER TABLE products ADD COLUMN stock_cost INTEGER NOT NULL DEFAULT 1"),
+            ("products", "stock_label", "ALTER TABLE products ADD COLUMN stock_label TEXT"),
             ("reviews", "image_url", "ALTER TABLE reviews ADD COLUMN image_url TEXT"),
             ("reviews", "awaiting_photo", "ALTER TABLE reviews ADD COLUMN awaiting_photo INTEGER NOT NULL DEFAULT 0"),
             ("reviews", "awaiting_photo_since", "ALTER TABLE reviews ADD COLUMN awaiting_photo_since TEXT"),
@@ -185,11 +196,50 @@ class Database:
                 await self.conn.commit()
                 logger.info("Migration applied: %s.%s", table, column)
 
+    async def _backfill_order_items(self) -> None:
+        """Order yang dibuat SEBELUM keranjang ada belum punya baris di
+        `order_items`. Backfill sekali (idempotent -- cuma nyentuh order
+        yang belum punya item) biar semua kode baru bisa baca order_items
+        seragam, gak perlu cabang khusus "order lama". Order lama selalu
+        1 produk x 1 qty; kalau stock_reserved = 1 stok yang kepotong dulu
+        = 1 unit dari produk itu (itu yang dibalikin kalau di-cancel)."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(
+            """
+            INSERT INTO order_items
+                (order_id, product_id, product_name, quantity, unit_price, line_total,
+                 stock_source, stock_source_id, stock_used)
+            SELECT o.id, o.product_id, COALESCE(p.name, 'Produk #' || o.product_id), 1,
+                   o.unit_price, o.unit_price,
+                   CASE WHEN o.stock_reserved = 1 THEN 'product' ELSE 'none' END,
+                   CASE WHEN o.stock_reserved = 1 THEN o.product_id END,
+                   CASE WHEN o.stock_reserved = 1 THEN 1 ELSE 0 END
+            FROM orders o
+            LEFT JOIN products p ON p.id = o.product_id
+            WHERE NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id)
+            """
+        )
+        await self.conn.commit()
+        if cursor.rowcount and cursor.rowcount > 0:
+            logger.info("Backfilled %d existing order(s) into order_items.", cursor.rowcount)
+
     async def execute(self, query: str, params: tuple = ()) -> int | None:
         assert self.conn is not None
         cursor = await self.conn.execute(query, params)
         await self.conn.commit()
         return cursor.lastrowid
+
+    async def execute_rowcount(self, query: str, params: tuple = ()) -> int:
+        """Kayak execute(), tapi return JUMLAH BARIS yang kena (bukan
+        lastrowid). Dipake buat update kondisional yang harus atomik --
+        misal "kurangin stok HANYA KALAU masih cukup" atau "ubah status
+        order HANYA KALAU masih di status X" -- biar dua aksi yang
+        barengan (klik ganda, loop expire vs staff) gak bisa dua-duanya
+        lolos. Return 0 artinya kondisinya gak kepenuhi, gak ada yang berubah."""
+        assert self.conn is not None
+        cursor = await self.conn.execute(query, params)
+        await self.conn.commit()
+        return cursor.rowcount
 
     async def executemany(self, query: str, seq_of_params) -> None:
         assert self.conn is not None

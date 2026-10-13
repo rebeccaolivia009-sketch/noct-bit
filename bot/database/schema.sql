@@ -29,6 +29,32 @@ CREATE TABLE IF NOT EXISTS category_types (
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Product Type (OPSIONAL) -- level antara Category Type dan Product
+-- (Category -> Category Type -> Product Type -> Product). Dipake kalau
+-- sebagian produk di satu Category Type perlu dikelompokin lagi (misal
+-- Robux: Via Username / Via Login / Gamepass). Category Type yang gak punya
+-- Product Type tetep jalan persis kayak sebelumnya.
+--
+-- Stok bisa DIGABUNG di level ini (shared_stock = 1): semua produk di
+-- bawah Product Type narik dari SATU pool yang sama, misal pool Robux
+-- 10.000 yang kepotong tiap ada yang beli paket 100/500/1000 Robux.
+-- stock_mode: unit (satuan, habis 1 per qty) | amount (jumlah, habis
+-- sesuai products.stock_cost x qty). Lihat bot.utils.stock.
+CREATE TABLE IF NOT EXISTS product_groups (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    category_type_id  INTEGER NOT NULL REFERENCES category_types(id) ON DELETE CASCADE,
+    name              TEXT NOT NULL,
+    description       TEXT,
+    emoji             TEXT,
+    position          INTEGER NOT NULL DEFAULT 0,
+    enabled           INTEGER NOT NULL DEFAULT 1,
+    shared_stock      INTEGER NOT NULL DEFAULT 0,
+    stock_mode        TEXT NOT NULL DEFAULT 'unit',     -- unit | amount
+    stock_quantity    INTEGER NOT NULL DEFAULT 0,
+    stock_label       TEXT,                              -- misal "Robux" (cuma buat tampilan)
+    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS products (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     category_type_id  INTEGER NOT NULL REFERENCES category_types(id) ON DELETE CASCADE,
@@ -39,6 +65,10 @@ CREATE TABLE IF NOT EXISTS products (
     product_type      TEXT NOT NULL DEFAULT 'manual',     -- manual | automatic | digital | service
     stock_type        TEXT NOT NULL DEFAULT 'unlimited',  -- unlimited | manual
     stock_quantity    INTEGER NOT NULL DEFAULT 0,
+    product_group_id  INTEGER REFERENCES product_groups(id) ON DELETE SET NULL,  -- NULL = gak masuk Product Type manapun
+    stock_mode        TEXT NOT NULL DEFAULT 'unit',       -- unit | amount (cuma kepake kalau stock_type = manual)
+    stock_cost        INTEGER NOT NULL DEFAULT 1,         -- stok yang kepake per 1 qty (mode amount, misal 800 buat paket 800 Robux)
+    stock_label       TEXT,                                -- misal "Robux"
     visible           INTEGER NOT NULL DEFAULT 1,
     base_price        REAL NOT NULL DEFAULT 0,
     currency_label    TEXT NOT NULL DEFAULT 'USD',
@@ -98,6 +128,36 @@ CREATE TABLE IF NOT EXISTS order_field_values (
     label     TEXT NOT NULL,
     field_type TEXT NOT NULL DEFAULT 'custom',
     value     TEXT
+);
+
+-- Isi order (keranjang multi-produk). SATU baris per produk per order.
+-- orders.product_id tetep keisi produk PERTAMA biar semua fitur lama yang
+-- baca orders.product_id (review, statistik, dst) tetep jalan; yang ngerti
+-- multi-item baca tabel ini. product_name di-snapshot biar riwayat gak
+-- rusak kalau produknya diganti nama/dihapus. stock_source/stock_source_id/
+-- stock_used nyimpen PERSIS stok apa yang kepotong, jadi cancel/refund/
+-- expire balikin jumlah yang bener walau stock_cost produknya udah berubah.
+CREATE TABLE IF NOT EXISTS order_items (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id         INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    product_id       INTEGER REFERENCES products(id) ON DELETE SET NULL,
+    product_name     TEXT NOT NULL,
+    quantity         INTEGER NOT NULL DEFAULT 1,
+    unit_price       REAL NOT NULL,
+    line_total       REAL NOT NULL,
+    stock_source     TEXT NOT NULL DEFAULT 'none',       -- none | product | group
+    stock_source_id  INTEGER,
+    stock_used       INTEGER NOT NULL DEFAULT 0
+);
+
+-- Keranjang per user (global, bukan per-guild -- toko emang satu). Disimpen
+-- di DB biar gak ilang pas bot restart atau view-nya timeout.
+CREATE TABLE IF NOT EXISTS cart_items (
+    user_id     INTEGER NOT NULL,
+    product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    quantity    INTEGER NOT NULL DEFAULT 1,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, product_id)
 );
 
 -- Messages NOCTRA sent in the customer's DM during checkout for this order
