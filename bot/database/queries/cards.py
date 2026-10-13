@@ -38,6 +38,27 @@ async def deduct_credit(db: Database, user_id: int, amount: float) -> None:
     )
 
 
+async def try_deduct_credit(db: Database, user_id: int, amount: float) -> bool:
+    """Potong saldo HANYA KALAU masih cukup (atomik). Dua checkout barengan
+    gak bisa dua-duanya lolos buat saldo yang sama dan bikin saldo minus --
+    beda sama deduct_credit() yang gak ngecek apa-apa."""
+    changed = await db.execute_rowcount(
+        "UPDATE cards SET credit_balance = credit_balance - ?, updated_at = datetime('now') "
+        "WHERE user_id = ? AND credit_balance >= ?",
+        (amount, user_id, amount),
+    )
+    return changed > 0
+
+
+async def try_deduct_noctoins(db: Database, user_id: int, amount: int) -> bool:
+    changed = await db.execute_rowcount(
+        "UPDATE cards SET noctoins = noctoins - ?, updated_at = datetime('now') "
+        "WHERE user_id = ? AND noctoins >= ?",
+        (amount, user_id, amount),
+    )
+    return changed > 0
+
+
 async def add_rewards(db: Database, user_id: int, noctoins: int, server_points: int) -> None:
     await db.execute(
         """

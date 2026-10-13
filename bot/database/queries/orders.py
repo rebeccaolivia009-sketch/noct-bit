@@ -51,6 +51,106 @@ async def create_order(
     )
 
 
+async def create_order_with_items(
+    db: Database,
+    user_id: int,
+    items: list[dict],
+    payment_method_id: int | None,
+    currency_label: str,
+    timeout_minutes: int | None,
+    *,
+    subtotal: float,
+    total_price: float | None = None,
+    paid_with_credit: bool = False,
+    noctoins_used: int = 0,
+) -> int:
+    """Bikin order + semua baris item-nya. `items` = list dict dengan key
+    product_id, product_name, quantity, unit_price, line_total,
+    stock_source, stock_source_id, stock_used (lihat bot.utils.checkout).
+
+    orders.product_id diisi produk PERTAMA (biar fitur lama yang baca
+    kolom itu -- review, statistik, dst -- tetep jalan) dan
+    orders.unit_price diisi `subtotal` (total SEBELUM potongan Noctoins);
+    orders.total_price = yang beneran dibayar. stock_reserved = 1 kalau
+    ada item yang motong stok.
+
+    Gak atomik lintas statement (wrapper Database commit per-query), jadi
+    kalau nulis item gagal di tengah, order-nya dihapus lagi (item ikut
+    kehapus lewat ON DELETE CASCADE) dan errornya di-raise ke caller buat
+    ngebalikin stok."""
+    if not items:
+        raise ValueError("Order harus punya minimal satu item.")
+
+    order_id = await create_order(
+        db,
+        user_id,
+        items[0]["product_id"],
+        payment_method_id,
+        subtotal,
+        currency_label,
+        any(int(it.get("stock_used", 0)) > 0 for it in items),
+        timeout_minutes,
+        total_price=total_price,
+        paid_with_credit=paid_with_credit,
+        noctoins_used=noctoins_used,
+    )
+    try:
+        for it in items:
+            await add_order_item(db, order_id, it)
+    except Exception:
+        await db.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+        raise
+    return order_id
+
+
+async def add_order_item(db: Database, order_id: int, item: dict) -> int:
+    return await db.execute(
+        """
+        INSERT INTO order_items
+            (order_id, product_id, product_name, quantity, unit_price, line_total,
+             stock_source, stock_source_id, stock_used)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            order_id, item["product_id"], item["product_name"], item["quantity"],
+            item["unit_price"], item["line_total"], item.get("stock_source", "none"),
+            item.get("stock_source_id"), int(item.get("stock_used", 0)),
+        ),
+    )
+
+
+async def list_order_items(db: Database, order_id: int):
+    return await db.fetchall(
+        "SELECT * FROM order_items WHERE order_id = ? ORDER BY id ASC", (order_id,)
+    )
+
+
+async def transition_status(
+    db: Database, order_id: int, new_status: str, allowed_from: tuple[str, ...]
+) -> bool:
+    """Ubah status order HANYA KALAU statusnya sekarang ada di
+    `allowed_from` -- satu statement atomik. Return True kalau beneran
+    berubah. Ini yang bikin klik ganda (atau tombol + /order barengan)
+    gak bisa nge-complete/cancel/refund order yang sama dua kali --
+    efek sampingnya (saldo, Noctoins, stok) cuma jalan buat yang menang."""
+    placeholders = ",".join("?" for _ in allowed_from)
+    changed = await db.execute_rowcount(
+        f"UPDATE orders SET status = ?, updated_at = datetime('now') "
+        f"WHERE id = ? AND status IN ({placeholders})",
+        (new_status, order_id, *allowed_from),
+    )
+    return changed > 0
+
+
+async def claim_stock_release(db: Database, order_id: int) -> bool:
+    """Tandain stok order ini udah dibalikin. True HANYA buat satu
+    pemanggil pertama -- yang False jangan balikin stok lagi."""
+    changed = await db.execute_rowcount(
+        "UPDATE orders SET stock_reserved = 0 WHERE id = ? AND stock_reserved = 1", (order_id,)
+    )
+    return changed > 0
+
+
 async def add_field_value(
     db: Database, order_id: int, label: str, field_type: str, value: str
 ) -> None:
