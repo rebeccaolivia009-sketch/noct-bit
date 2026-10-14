@@ -23,6 +23,7 @@ from bot.utils.autocomplete import (
     product_autocomplete,
     product_group_autocomplete,
 )
+from bot.utils import delete_guard
 from bot.utils.helpers import RuntimeSettings
 from bot.utils.permissions import staff_only
 from bot.utils.validators import is_valid_emoji
@@ -328,7 +329,24 @@ class ProductCog(commands.Cog):
         if not existing:
             await interaction.response.send_message(embed=embeds.error_embed("Produk gak ketemu."), ephemeral=True)
             return
-        await products_q.delete_product(self.bot.db, product)
+        blocked = await delete_guard.blocked_message(
+            self.bot.db,
+            what=f"Produk **{existing['name']}**",
+            hide_hint=f"Pakai `/product visibility product:{product} visible:False` buat nyembunyiin dari /shop (riwayat tetap aman).",
+            product_id=product,
+        )
+        if blocked:
+            await interaction.response.send_message(embed=embeds.error_embed(blocked), ephemeral=True)
+            return
+        try:
+            await products_q.delete_product(self.bot.db, product)
+        except Exception as exc:  # noqa: BLE001
+            if not delete_guard.is_fk_error(exc):
+                raise
+            await interaction.response.send_message(
+                embed=embeds.error_embed(delete_guard.FALLBACK_MESSAGE), ephemeral=True
+            )
+            return
         await interaction.response.send_message(
             embed=embeds.success_embed(f"Produk **{existing['name']}** udah dihapus."), ephemeral=True
         )

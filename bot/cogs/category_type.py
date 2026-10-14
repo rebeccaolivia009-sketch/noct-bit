@@ -22,6 +22,7 @@ from bot.database.queries import categories as categories_q
 from bot.database.queries import category_types as category_types_q
 from bot.database.queries import fields as fields_q
 from bot.ui import embeds
+from bot.utils import delete_guard
 from bot.utils.autocomplete import category_autocomplete, category_type_autocomplete
 from bot.utils.permissions import staff_only
 from bot.utils.validators import is_valid_emoji
@@ -132,9 +133,28 @@ class CategoryTypeCog(commands.Cog):
         if not existing:
             await interaction.response.send_message(embed=embeds.error_embed("Category type gak ketemu."), ephemeral=True)
             return
-        await category_types_q.delete_category_type(self.bot.db, category_type)
+        blocked = await delete_guard.blocked_message(
+            self.bot.db,
+            what=f"Category type **{existing['name']}**",
+            hide_hint="Pakai `/category_type disable` buat nyembunyiin dari /shop (riwayat tetap aman).",
+            category_type_id=category_type,
+        )
+        if blocked:
+            await interaction.response.send_message(embed=embeds.error_embed(blocked), ephemeral=True)
+            return
+        try:
+            await category_types_q.delete_category_type(self.bot.db, category_type)
+        except Exception as exc:  # noqa: BLE001
+            if not delete_guard.is_fk_error(exc):
+                raise
+            await interaction.response.send_message(
+                embed=embeds.error_embed(delete_guard.FALLBACK_MESSAGE), ephemeral=True
+            )
+            return
         await interaction.response.send_message(
-            embed=embeds.success_embed(f"Category type **{existing['name']}** beserta produknya udah dihapus."),
+            embed=embeds.success_embed(
+                f"Category type **{existing['name']}** beserta Product Type dan produknya udah dihapus."
+            ),
             ephemeral=True,
         )
 

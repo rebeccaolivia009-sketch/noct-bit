@@ -8,6 +8,7 @@ from discord.ext import commands
 
 from bot.database.queries import categories as categories_q
 from bot.ui import embeds
+from bot.utils import delete_guard
 from bot.utils.autocomplete import category_autocomplete
 from bot.utils.permissions import staff_only
 from bot.utils.validators import is_valid_emoji
@@ -94,7 +95,24 @@ class CategoryCog(commands.Cog):
         if not existing:
             await interaction.response.send_message(embed=embeds.error_embed("Kategori gak ketemu."), ephemeral=True)
             return
-        await categories_q.delete_category(self.bot.db, category)
+        blocked = await delete_guard.blocked_message(
+            self.bot.db,
+            what=f"Kategori **{existing['name']}**",
+            hide_hint="Pakai `/category disable` buat nyembunyiin dari /shop (riwayat tetap aman).",
+            category_id=category,
+        )
+        if blocked:
+            await interaction.response.send_message(embed=embeds.error_embed(blocked), ephemeral=True)
+            return
+        try:
+            await categories_q.delete_category(self.bot.db, category)
+        except Exception as exc:  # noqa: BLE001
+            if not delete_guard.is_fk_error(exc):
+                raise
+            await interaction.response.send_message(
+                embed=embeds.error_embed(delete_guard.FALLBACK_MESSAGE), ephemeral=True
+            )
+            return
         await interaction.response.send_message(
             embed=embeds.success_embed(f"Kategori **{existing['name']}** beserta produknya udah dihapus."),
             ephemeral=True,
