@@ -122,6 +122,37 @@ async def adjust_stock(db: Database, product_id: int, delta: int) -> None:
     )
 
 
+async def list_products_with_history(
+    db: Database,
+    *,
+    product_id: int | None = None,
+    category_type_id: int | None = None,
+    category_id: int | None = None,
+):
+    """Produk (dalam cakupan yang diminta) yang udah punya riwayat order
+    atau review. Produk kayak gitu GAK bisa dihapus -- orders.product_id dan
+    reviews.product_id refer ke products tanpa ON DELETE, jadi SQLite nolak
+    (FOREIGN KEY constraint failed) biar riwayat transaksi gak yatim.
+    Dipake command delete buat ngasih alasan yang jelas, bukan error."""
+    query = """
+        SELECT p.id, p.name FROM products p
+        WHERE (EXISTS (SELECT 1 FROM orders o WHERE o.product_id = p.id)
+               OR EXISTS (SELECT 1 FROM reviews r WHERE r.product_id = p.id))
+    """
+    params: list = []
+    if product_id is not None:
+        query += " AND p.id = ?"
+        params.append(product_id)
+    if category_type_id is not None:
+        query += " AND p.category_type_id = ?"
+        params.append(category_type_id)
+    if category_id is not None:
+        query += " AND p.category_type_id IN (SELECT id FROM category_types WHERE category_id = ?)"
+        params.append(category_id)
+    query += " ORDER BY p.name ASC"
+    return await db.fetchall(query, tuple(params))
+
+
 async def try_decrement_stock(db: Database, product_id: int, amount: int) -> bool:
     """Kurangin stok produk HANYA KALAU masih cukup (atomik, satu
     statement). Beda dari adjust_stock() yang gak pernah nolak -- ini yang
