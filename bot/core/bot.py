@@ -17,6 +17,7 @@ EXTENSIONS = (
     "bot.cogs.category_type",
     "bot.cogs.product_group",
     "bot.cogs.product",
+    "bot.cogs.builder",
     "bot.cogs.payment",
     "bot.cogs.settings",
     "bot.cogs.shop",
