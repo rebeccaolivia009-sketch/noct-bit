@@ -8,8 +8,13 @@ ATURAN (sengaja konservatif):
   * HANYA NAIK -- bot gak pernah nyabut role tier karena belanja turun
     (misal ada refund) dan gak pernah nurunin role yang staff kasih manual
     lebih tinggi dari hasil hitungan.
-  * Naik tier = role tier BARU ditambah, role tier yang LEBIH RENDAH yang
-    dipegang user dicabut (biar user cuma pegang satu tier tertinggi).
+  * Dua mode, diatur lewat `/tier stack`:
+      - GANTI (default): naik tier = role tier BARU ditambah, role tier
+        yang LEBIH RENDAH yang dipegang user dicabut (user cuma pegang
+        satu tier tertinggi).
+      - TUMPUK: user megang SEMUA role tier yang ambangnya udah kecapai
+        (Royal Buyer + King of Noctra, dst). Role tier gak pernah dicabut
+        sama bot; sinkronisasi cuma nambahin yang kurang.
   * Akun yang dikecualiin dari leaderboard (/settings leaderboard_exclude,
     biasanya staff/tester) gak pernah diutak-atik.
   * Otomatisasinya MATI secara default (`/tier auto`) -- jalanin
@@ -32,6 +37,7 @@ from bot.ui import components, embeds
 from bot.utils.helpers import RuntimeSettings
 
 AUTO_SETTING_KEY = "tier_auto_enabled"
+STACK_SETTING_KEY = "tier_stack_enabled"   # "1" = tumpuk semua tier yang kecapai; selain itu = ganti (default)
 AUDIT_REASON = "Tier loyalitas NOCTRA (otomatis)"
 ROLE_CALL_DELAY_SECONDS = 0.4  # jeda antar panggilan role biar aman dari rate limit
 
@@ -69,22 +75,36 @@ def next_tier_after(tiers: list[Tier], spend: float) -> Tier | None:
 class TierPlan:
     target: Tier | None            # tier yang BERHAK dipegang user (dari belanja)
     held_highest: Tier | None      # tier tertinggi yang SEKARANG dipegang user
-    add_role_id: int | None = None
+    add_role_ids: list[int] = field(default_factory=list)   # urut dari tier terendah
     remove_role_ids: list[int] = field(default_factory=list)
     kept_manual_higher: bool = False  # user udah pegang tier lebih tinggi (manual) -- gak diutak-atik
 
     @property
+    def add_role_id(self) -> int | None:
+        """Role tier TARGET kalau lagi ditambahin (kompatibel sama kode
+        lama yang cuma kenal satu role tambahan)."""
+        if self.target is not None and self.target.role_id in self.add_role_ids:
+            return self.target.role_id
+        return None
+
+    @property
     def has_changes(self) -> bool:
-        return self.add_role_id is not None or bool(self.remove_role_ids)
+        return bool(self.add_role_ids) or bool(self.remove_role_ids)
 
     @property
     def is_promotion(self) -> bool:
-        return self.add_role_id is not None and self.target is not None
+        """Naik tier = tier TARGET (tertinggi yang berhak) baru ditambahin.
+        Cuma ngelengkapin role tier bawah (mode tumpuk) bukan kenaikan."""
+        return self.add_role_id is not None
 
 
-def plan_member(tiers: list[Tier], member_role_ids: set[int], spend: float) -> TierPlan:
+def plan_member(
+    tiers: list[Tier], member_role_ids: set[int], spend: float, *, stack: bool = False
+) -> TierPlan:
     """Fungsi murni: tentuin role apa yang harus ditambah/dicabut. Gak
-    nyentuh Discord sama sekali -- makanya gampang dites per skenario."""
+    nyentuh Discord sama sekali -- makanya gampang dites per skenario.
+    stack=False: pegang satu tier tertinggi (cabut yang lebih rendah).
+    stack=True: pegang SEMUA tier yang kecapai (gak ada yang dicabut)."""
     held = [t for t in tiers if t.role_id in member_role_ids]
     held_highest = max(held, key=lambda t: t.min_spend) if held else None
     target = pick_tier(tiers, spend)
@@ -94,8 +114,12 @@ def plan_member(tiers: list[Tier], member_role_ids: set[int], spend: float) -> T
     if held_highest is not None and held_highest.min_spend > target.min_spend:
         plan.kept_manual_higher = True
         return plan
+    if stack:
+        reached = sorted((t for t in tiers if t.min_spend <= spend), key=lambda t: t.min_spend)
+        plan.add_role_ids = [t.role_id for t in reached if t.role_id not in member_role_ids]
+        return plan
     if target.role_id not in member_role_ids:
-        plan.add_role_id = target.role_id
+        plan.add_role_ids = [target.role_id]
     plan.remove_role_ids = [
         t.role_id for t in held if t.min_spend < target.min_spend and t.role_id != target.role_id
     ]
@@ -136,6 +160,10 @@ async def is_auto_enabled(db) -> bool:
     return (await settings_q.get_setting(db, AUTO_SETTING_KEY)) == "1"
 
 
+async def is_stack_enabled(db) -> bool:
+    return (await settings_q.get_setting(db, STACK_SETTING_KEY)) == "1"
+
+
 async def load_tiers(db, guild_id: int) -> list[Tier]:
     return tiers_from_rows(await tiers_q.list_tiers(db, guild_id))
 
@@ -149,6 +177,7 @@ async def tier_name_for_spend(db, guild_id: int, spend: float) -> str | None:
 async def sync_user(
     bot, guild: discord.Guild, user_id: int, *, apply: bool,
     tiers: list[Tier] | None = None, excluded: list[int] | None = None,
+    stack: bool | None = None,
 ) -> SyncResult:
     """Hitung (dan kalau apply=True, TERAPIN) tier satu user. Gak pernah
     raise: semua masalah dikembaliin di SyncResult.error / .skipped."""
@@ -177,21 +206,23 @@ async def sync_user(
                 result.skipped = "user gak ada di server"
                 return result
 
-        plan = plan_member(tiers, {r.id for r in member.roles}, result.spend)
+        if stack is None:
+            stack = await is_stack_enabled(db)
+        plan = plan_member(tiers, {r.id for r in member.roles}, result.spend, stack=stack)
         result.plan = plan
         if not plan.has_changes or not apply:
             return result
 
-        add_role = guild.get_role(plan.add_role_id) if plan.add_role_id else None
+        add_roles = [guild.get_role(rid) for rid in plan.add_role_ids]
         remove_roles = [guild.get_role(rid) for rid in plan.remove_role_ids]
-        for role in ([add_role] if plan.add_role_id else []) + remove_roles:
+        for role in add_roles + remove_roles:
             problem = role_problem(guild, role)
             if problem:
                 result.error = problem
                 return result
 
-        if add_role:
-            await member.add_roles(add_role, reason=AUDIT_REASON)
+        if add_roles:
+            await member.add_roles(*add_roles, reason=AUDIT_REASON)
         for role in remove_roles:
             if role is not None:
                 await member.remove_roles(role, reason=AUDIT_REASON)
@@ -271,9 +302,10 @@ async def sync_all(bot, guild: discord.Guild, *, apply: bool) -> list[SyncResult
     if not tiers:
         return []
     excluded = await RuntimeSettings(db).leaderboard_excluded_user_ids()
+    stack = await is_stack_enabled(db)
     results: list[SyncResult] = []
     for user_id, _spend in await buyer_stats_q.get_all_spenders(db, excluded):
-        result = await sync_user(bot, guild, user_id, apply=apply, tiers=tiers, excluded=excluded)
+        result = await sync_user(bot, guild, user_id, apply=apply, tiers=tiers, excluded=excluded, stack=stack)
         results.append(result)
         if apply and result.applied:
             await asyncio.sleep(ROLE_CALL_DELAY_SECONDS)
