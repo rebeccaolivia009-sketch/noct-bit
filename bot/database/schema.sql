@@ -457,6 +457,26 @@ CREATE TABLE IF NOT EXISTS shop_panel_state (
     updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Sticky message: pesan yang selalu nempel di PALING BAWAH channel. Tiap ada
+-- pesan baru, bot kirim ulang sticky-nya ke bawah dan hapus yang lama
+-- (lihat bot.cogs.sticky). SATU sticky per channel (channel_id UNIQUE).
+-- message_id = pesan sticky yang lagi terpasang sekarang (NULL = belum/ga
+-- terpasang); enabled = 0 nyimpen konfigurasinya tapi sticky-nya dicopot.
+CREATE TABLE IF NOT EXISTS sticky_messages (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id       INTEGER NOT NULL,
+    channel_id     INTEGER NOT NULL UNIQUE,
+    title          TEXT NOT NULL,
+    description    TEXT NOT NULL,
+    footer_text    TEXT,
+    thumbnail_url  TEXT,
+    accent_color   INTEGER,
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    message_id     INTEGER,
+    created_by     INTEGER,
+    updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Panel chat per-order di channel order-log -- SATU pesan per order yang
 -- di-EDIT (bukan bikin pesan baru) tiap ada balesan customer ATAU staff,
 -- biar channel order-log gak kebanjiran notif baru buat obrolan yang
