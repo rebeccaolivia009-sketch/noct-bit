@@ -182,6 +182,7 @@ class TiersCog(commands.Cog):
             return
         currency = await self._currency()
         auto = await tiers_util.is_auto_enabled(self.bot.db)
+        stack = await tiers_util.is_stack_enabled(self.bot.db)
         lines = []
         for tier in reversed(tiers):
             role = guild.get_role(tier.role_id)
@@ -189,6 +190,7 @@ class TiersCog(commands.Cog):
             note = "" if role else "  **(role hilang!)**"
             lines.append(f"\u25b8 **{tier.name}** -- {role.mention if role else f'`{tier.role_id}`'} -- min {format_price(tier.min_spend, currency)} -- {holders} pemegang{note}")
         lines.append(f"\nOtomatisasi: **{'AKTIF' if auto else 'MATI'}**")
+        lines.append(f"Mode role: **{'TUMPUK (pegang semua tier yang kecapai)' if stack else 'GANTI (satu tier tertinggi)'}**")
         await interaction.response.send_message(
             embed=embeds.info_embed("Tier Loyalitas", "\n".join(lines)), ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
@@ -227,8 +229,7 @@ class TiersCog(commands.Cog):
             lines.append("")
             for r in shown:
                 parts = []
-                if r.plan.add_role_id:
-                    parts.append(f"+ {tiers[r.plan.add_role_id].name}")
+                parts.extend(f"+ {tiers[rid].name}" for rid in r.plan.add_role_ids if rid in tiers)
                 parts.extend(f"- {tiers[rid].name}" for rid in r.plan.remove_role_ids if rid in tiers)
                 lines.append(f"\u25b8 <@{r.user_id}> ({format_price(r.spend, currency)}): {', '.join(parts)}")
             if len(changes) > len(shown):
@@ -252,6 +253,27 @@ class TiersCog(commands.Cog):
             f"{AUTO_SYNC_HOURS} jam."
             if aktif else "Otomatisasi tier **MATI**. Tidak ada role yang diubah otomatis."
         )
+        await interaction.response.send_message(embed=embeds.success_embed(text), ephemeral=True)
+
+    @tier_group.command(name="stack", description="Mode role tier: TUMPUK (semua tier yang kecapai) atau GANTI (satu tertinggi).")
+    @app_commands.describe(aktif="True = pembeli megang SEMUA role tier yang kecapai. False = cuma satu tier tertinggi (default).")
+    @staff_only()
+    async def stack(self, interaction: discord.Interaction, aktif: bool) -> None:
+        await settings_q.set_setting(self.bot.db, tiers_util.STACK_SETTING_KEY, "1" if aktif else "0")
+        if aktif:
+            text = (
+                "Mode tier **TUMPUK**: pembeli megang SEMUA role tier yang ambangnya udah kecapai, dan bot gak "
+                "nyabut role tier lagi.\n"
+                "Role tier bawah yang sempat dicabut baru dikembaliin pas sinkronisasi jalan. Cek dulu dampaknya lewat "
+                "`/tier sync` (simulasi), terus `/tier sync apply:True` buat nerapin sekarang."
+            )
+        else:
+            text = (
+                "Mode tier **GANTI**: pembeli cuma megang satu tier tertinggi. Heads up: sinkronisasi berikutnya "
+                "(`/tier sync apply:True`, order selesai, atau sinkronisasi berkala kalau otomatisasi nyala) "
+                "**bakal nyabut** role tier bawah dari pembeli yang sekarang megang beberapa tier. "
+                "Cek dulu lewat `/tier sync` (simulasi)."
+            )
         await interaction.response.send_message(embed=embeds.success_embed(text), ephemeral=True)
 
     # -- Untuk pembeli ----------------------------------------------------------------------
