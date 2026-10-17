@@ -14,7 +14,7 @@ Staff:
   /tier auto aktif:<bool>         -- nyalain/matiin otomatisasi (default MATI)
   /tier panel                     -- posting panel publik daftar tier
 Semua pembeli:
-  /tier me                        -- progres tier sendiri (ephemeral)
+  /mytier                         -- progres tier sendiri (ephemeral, buat customer)
 
 Urutan rollout yang aman: /tier add (semua tier) -> /tier sync (simulasi) ->
 cek hasilnya -> /tier sync apply:True -> /tier auto aktif:True.
@@ -278,7 +278,10 @@ class TiersCog(commands.Cog):
 
     # -- Untuk pembeli ----------------------------------------------------------------------
 
-    @tier_group.command(name="me", description="Lihat tier dan progres belanjamu.")
+    # Sengaja BUKAN subcommand /tier: grup /tier isinya staff semua, jadi bisa
+    # disembunyiin dari member biasa (lihat bot.utils.command_visibility).
+    @app_commands.command(name="mytier", description="Lihat tier dan progres belanjamu.")
+    @app_commands.guild_only()
     async def me(self, interaction: discord.Interaction) -> None:
         db, guild = self.bot.db, interaction.guild
         tiers = await tiers_util.load_tiers(db, guild.id)
