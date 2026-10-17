@@ -19,6 +19,7 @@ EXTENSIONS = (
     "bot.cogs.product",
     "bot.cogs.builder",
     "bot.cogs.sticky",
+    "bot.cogs.stats",
     "bot.cogs.payment",
     "bot.cogs.settings",
     "bot.cogs.shop",
