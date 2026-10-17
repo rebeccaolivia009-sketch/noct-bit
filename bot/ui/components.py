@@ -1300,7 +1300,7 @@ def _progress_bar(fraction: float, width: int = 12) -> str:
 
 
 def tier_progress_container(card: dict) -> discord.ui.Container:
-    """Kartu progres tier pembeli (/tier me). card = {display_name,
+    """Kartu progres tier pembeli (/mytier). card = {display_name,
     avatar_url, spend, currency, current{name,description}|None,
     next{name,remaining,progress}|None, tiers[{name,min_spend,reached,
     current}]}."""
@@ -1363,7 +1363,7 @@ def tier_panel_container(tiers: list[dict], currency: str) -> discord.ui.Contain
         _plain_separator(),
         discord.ui.TextDisplay(body),
         _plain_separator(),
-        discord.ui.TextDisplay("-# Cek progresmu kapan saja dengan /tier me"),
+        discord.ui.TextDisplay("-# Cek progresmu kapan saja dengan /mytier"),
         accent_colour=COLOR_ACCENT,
     )
 
