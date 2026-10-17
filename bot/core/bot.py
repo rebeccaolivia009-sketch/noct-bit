@@ -82,6 +82,16 @@ class NoctraBot(commands.Bot):
             except Exception:  # noqa: BLE001
                 logger.exception("Failed to load extension: %s", extension)
 
+        # Sembunyiin command staff dari member biasa (default_member_permissions)
+        # -- HARUS setelah semua cog ke-load dan sebelum sync. Gagal = command
+        # tetep keliatan (bukan bot gagal start), pengecekan staff_only tetap jalan.
+        try:
+            from bot.utils import command_visibility
+
+            command_visibility.apply_from_env(self.tree)
+        except Exception:  # noqa: BLE001
+            logger.exception("Gagal nerapin visibilitas command staff.")
+
         self._register_persistent_views()
         self._register_dynamic_items()
         setup_error_handler(self)
