@@ -20,6 +20,8 @@ EXTENSIONS = (
     "bot.cogs.builder",
     "bot.cogs.sticky",
     "bot.cogs.stats",
+    "bot.cogs.autoreact",
+    "bot.cogs.staff_access",
     "bot.cogs.payment",
     "bot.cogs.settings",
     "bot.cogs.shop",
@@ -88,7 +90,7 @@ class NoctraBot(commands.Bot):
         try:
             from bot.utils import command_visibility
 
-            command_visibility.apply_from_env(self.tree)
+            self.visibility_report = command_visibility.apply_from_env(self.tree)
         except Exception:  # noqa: BLE001
             logger.exception("Gagal nerapin visibilitas command staff.")
 
