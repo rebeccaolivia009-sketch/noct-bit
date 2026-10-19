@@ -66,6 +66,7 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)",
             "CREATE INDEX IF NOT EXISTS idx_cart_items_user ON cart_items(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_sticky_guild ON sticky_messages(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_auto_reactions_guild ON auto_reactions(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_fields_category_type ON product_fields(category_type_id)",
             "CREATE INDEX IF NOT EXISTS idx_fields_group ON product_fields(product_group_id)",
             "CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)",

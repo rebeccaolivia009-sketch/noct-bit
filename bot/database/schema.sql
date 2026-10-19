@@ -477,6 +477,22 @@ CREATE TABLE IF NOT EXISTS sticky_messages (
     updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Auto reaction: bot otomatis nambahin reaksi emoji ke pesan baru di sebuah
+-- channel (lihat bot.cogs.autoreact). SATU konfigurasi per channel.
+-- emojis = JSON list (urut = urutan reaksi ditambahin; unicode atau
+-- "<:nama:id>" buat emoji custom). filter_mode: all | media | links.
+CREATE TABLE IF NOT EXISTS auto_reactions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id      INTEGER NOT NULL,
+    channel_id    INTEGER NOT NULL UNIQUE,
+    emojis        TEXT NOT NULL,
+    filter_mode   TEXT NOT NULL DEFAULT 'all',
+    ignore_bots   INTEGER NOT NULL DEFAULT 1,
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    created_by    INTEGER,
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Panel chat per-order di channel order-log -- SATU pesan per order yang
 -- di-EDIT (bukan bikin pesan baru) tiap ada balesan customer ATAU staff,
 -- biar channel order-log gak kebanjiran notif baru buat obrolan yang
