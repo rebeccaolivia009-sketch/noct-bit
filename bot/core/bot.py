@@ -21,6 +21,7 @@ EXTENSIONS = (
     "bot.cogs.sticky",
     "bot.cogs.stats",
     "bot.cogs.autoreact",
+    "bot.cogs.customorder",
     "bot.cogs.staff_access",
     "bot.cogs.payment",
     "bot.cogs.settings",
@@ -175,7 +176,9 @@ class NoctraBot(commands.Bot):
             InvitePanelView,
         )
 
-        self.add_view(ShopPanelView())
+        # custom_label diisi biar custom_id tombol "Produk Lainnya" ikut terdaftar
+        # (routing klik cuma lihat custom_id); tampil/tidaknya diatur task refresh panel.
+        self.add_view(ShopPanelView(custom_label="Produk Lainnya"))
         self.add_view(TicketControlView())
         self.add_view(TicketClaimedView())
         self.add_view(TicketReopenView())
