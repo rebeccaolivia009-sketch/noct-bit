@@ -28,6 +28,7 @@ Persistent views/items (survive restart bot):
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from datetime import datetime, timezone
 
@@ -63,10 +64,11 @@ from bot.ui.modals import (
 )
 from bot.utils import card_actions, order_actions, review_actions, ticket_actions
 from bot.utils import checkout as checkout_util
+from bot.utils import custom_order
 from bot.utils.helpers import RuntimeSettings, format_price
 from bot.utils.permissions import is_staff
 from bot.utils.stock import resolve_source
-from bot.utils.validators import FieldValidationError, parse_hex_color, validate_field_value
+from bot.utils.validators import FieldValidationError, is_valid_emoji, parse_hex_color, validate_field_value
 
 MAX_SELECT_OPTIONS = 25
 
@@ -121,10 +123,48 @@ class CategorySelect(discord.ui.Select):
 
 
 class CategoryBrowseView(discord.ui.View):
-    def __init__(self, categories: list):
+    """Pilihan kategori. `custom` = (label, emoji) tombol "Produk Lainnya"
+    kalau fitur itu nyala (lihat bot.utils.custom_order)."""
+
+    def __init__(self, categories: list, custom: tuple[str, str | None] | None = None):
         super().__init__(timeout=300)
-        self.add_item(CategorySelect(categories))
+        if categories:
+            self.add_item(CategorySelect(categories))
+        if custom:
+            self.add_item(CustomOrderBrowseButton(*custom))
         self.add_item(CartButton())
+
+
+def _button_emoji(value: str | None) -> str | None:
+    return value if value and is_valid_emoji(value) else None
+
+
+async def make_category_browse_view(db, categories: list) -> CategoryBrowseView:
+    """CategoryBrowseView + tombol Produk Lainnya kalau fitur itu aktif."""
+    cfg = await custom_order.active(db)
+    return CategoryBrowseView(categories, custom=(cfg.label, _button_emoji(cfg.emoji)) if cfg else None)
+
+
+async def start_custom_order(interaction: discord.Interaction) -> None:
+    """Customer milih "Produk Lainnya": mulai checkout biasa buat produk
+    sistemnya -- alur selanjutnya (DM -> form -> pembayaran -> order) SAMA
+    dengan produk katalog."""
+    db = interaction.client.db  # type: ignore[attr-defined]
+    cfg = await custom_order.active(db)
+    if cfg is None:
+        await interaction.response.send_message(
+            embed=embeds.error_embed("Fitur ini lagi gak tersedia. Coba lagi nanti ya."), ephemeral=True
+        )
+        return
+    await start_checkout(interaction, checkout_util.CheckoutRequest(((cfg.product_id, 1),)))
+
+
+class CustomOrderBrowseButton(discord.ui.Button):
+    def __init__(self, label: str, emoji: str | None = None) -> None:
+        super().__init__(label=label[:80], emoji=emoji, style=discord.ButtonStyle.primary)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await start_custom_order(interaction)
 
 
 async def _type_level_payload(db, category_type) -> tuple[discord.Embed, discord.ui.View]:
@@ -218,7 +258,7 @@ class BackToCategoriesButton(discord.ui.Button):
         embed = embeds.base_embed(
             "NOCTRA STORE", "Pilih kategori di bawah buat liat produk yang ada.", color=COLOR_ACCENT
         )
-        view = CategoryBrowseView(categories)
+        view = await make_category_browse_view(db, categories)
         await interaction.response.edit_message(embed=embed, view=view)
 
 
@@ -461,7 +501,7 @@ class BackFromProductDetailButton(discord.ui.Button):
                 "NOCTRA STORE", "Pilih kategori di bawah buat liat produk yang ada.", color=COLOR_ACCENT
             )
             await interaction.response.send_message(
-                embed=embed, view=CategoryBrowseView(categories), ephemeral=True
+                embed=embed, view=await make_category_browse_view(db, categories), ephemeral=True
             )
             return
         embed, view = await _product_back_payload(db, product)
@@ -643,7 +683,9 @@ class CartContinueShoppingButton(discord.ui.Button):
             embed.description = "Toko belum ada kategori yang aktif nih. Cek lagi nanti ya."
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        await interaction.response.send_message(embed=embed, view=CategoryBrowseView(categories), ephemeral=True)
+        await interaction.response.send_message(
+            embed=embed, view=await make_category_browse_view(db, categories), ephemeral=True
+        )
 
 
 class CartClearButton(discord.ui.Button):
@@ -730,6 +772,8 @@ class ShopPanelView(discord.ui.LayoutView):
         button_label: str = "Jelajahi Toko",
         button_emoji: str | discord.PartialEmoji | None = None,
         updated_at: datetime | None = None,
+        custom_label: str | None = None,
+        custom_emoji: str | discord.PartialEmoji | None = None,
     ) -> None:
         super().__init__(timeout=None)
         container = components.shop_panel_container(title, description, banner_url)
@@ -739,7 +783,17 @@ class ShopPanelView(discord.ui.LayoutView):
             custom_id="noctra:shop:browse", emoji=button_emoji,
         )
         button.callback = self.browse
-        container.add_item(discord.ui.ActionRow(button))
+        buttons = [button]
+        if custom_label:
+            # Tombol "Produk Lainnya" -- cuma ada kalau fitur nyala (task refresh
+            # panel yang ngasih tau); custom_id tetap terdaftar di bot.py.
+            custom_button = discord.ui.Button(
+                label=custom_label[:80], style=discord.ButtonStyle.primary,
+                custom_id="noctra:shop:custom", emoji=custom_emoji,
+            )
+            custom_button.callback = self.custom
+            buttons.append(custom_button)
+        container.add_item(discord.ui.ActionRow(*buttons))
         container.add_item(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
 
         ts = updated_at or datetime.now(timezone.utc)
@@ -762,13 +816,18 @@ class ShopPanelView(discord.ui.LayoutView):
         embed = embeds.base_embed(
             "NOCTRA STORE", "Pilih kategori di bawah buat liat produk yang ada.", color=COLOR_ACCENT
         )
+        view = await make_category_browse_view(db, categories)
         if not categories:
-            embed.description = "Toko belum ada kategori yang aktif nih. Cek lagi nanti ya."
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        await interaction.response.send_message(
-            embed=embed, view=CategoryBrowseView(categories), ephemeral=True
-        )
+            # Tanpa kategori aktif, panel tetap berguna kalau ada "Produk Lainnya".
+            if not any(isinstance(item, CustomOrderBrowseButton) for item in view.children):
+                embed.description = "Toko belum ada kategori yang aktif nih. Cek lagi nanti ya."
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            embed.description = "Belum ada produk di katalog, tapi kamu bisa pesen lewat tombol di bawah."
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    async def custom(self, interaction: discord.Interaction) -> None:
+        await start_custom_order(interaction)
 
 
 # ============================================================================
@@ -786,7 +845,8 @@ async def start_checkout(interaction: discord.Interaction, request: checkout_uti
     DM "Lanjutin Order" (semua langkah berikutnya jalan di DM)."""
     db = interaction.client.db  # type: ignore[attr-defined]
     lines = await checkout_util.build_lines(
-        db, request.lines, drop_missing_for=interaction.user.id if request.from_cart else None
+        db, request.lines, drop_missing_for=interaction.user.id if request.from_cart else None,
+        overrides=request.override_map,
     )
     if not lines:
         await interaction.response.send_message(
@@ -799,13 +859,17 @@ async def start_checkout(interaction: discord.Interaction, request: checkout_uti
         return
 
     currency = lines[0].currency
-    summary = checkout_util.describe_lines(lines)
-    total = format_price(checkout_util.subtotal(lines), currency)
+    custom_cfg = await custom_order.load(db)
+    if any(l.is_custom for l in lines) and custom_cfg.input_mode and not request.overrides:
+        # "Produk Lainnya" mode nominal: harganya belum ada -- diisi customer di form.
+        intro = f"{custom_cfg.description}\n\n" if custom_cfg.description else ""
+        body = f"{intro}Klik di bawah buat lanjutin pesen. **{custom_cfg.price_label}** kamu isi di form langkah berikutnya."
+    else:
+        summary = checkout_util.describe_lines(lines)
+        total = format_price(checkout_util.subtotal(lines), currency)
+        body = f"Klik di bawah buat lanjutin pesen:\n{summary}\n\n**Total: {total}**"
     dm_channel = await interaction.user.create_dm()
-    embed = embeds.info_embed(
-        "Lanjutin Order Kamu",
-        f"Klik di bawah buat lanjutin pesen:\n{summary}\n\n**Total: {total}**",
-    )
+    embed = embeds.info_embed("Lanjutin Order Kamu", body)
     try:
         await dm_channel.send(embed=embed, view=ContinueOrderView(request))
     except discord.Forbidden:
@@ -863,7 +927,7 @@ async def proceed_to_fields(interaction: discord.Interaction, request: checkout_
     db = interaction.client.db  # type: ignore[attr-defined]
 
     # Validasi ulang -- stok/harga/ketersediaan bisa berubah sejak prompt DM dikirim.
-    lines = await checkout_util.build_lines(db, request.lines)
+    lines = await checkout_util.build_lines(db, request.lines, overrides=request.override_map)
     problem = "Produknya lagi gak tersedia." if not lines else checkout_util.first_problem(lines)
     if problem:
         await interaction.response.send_message(embed=embeds.error_embed(problem), ephemeral=False)
@@ -888,7 +952,9 @@ async def proceed_to_fields(interaction: discord.Interaction, request: checkout_
                     validation=f["validation"],
                     label=f["label"],
                 )
-                cleaned.append({"label": f["label"], "field_type": f["field_type"], "value": value})
+                cleaned.append(
+                    {"label": f["label"], "field_type": f["field_type"], "value": value, "field_id": field_id}
+                )
             except FieldValidationError as exc:
                 errors.append(str(exc))
 
@@ -901,7 +967,21 @@ async def proceed_to_fields(interaction: discord.Interaction, request: checkout_
                 ephemeral=False,
             )
             return
-        await proceed_to_payment(inter, request, cleaned)
+
+        # "Produk Lainnya" mode nominal: field nominal (paling atas di form)
+        # jadi HARGA order. Divalidasi (angka, min/maks) sebelum lanjut.
+        next_request = request
+        price_entry = next((c for c in cleaned if c["field_id"] == custom_order.PRICE_FIELD_ID), None)
+        if price_entry is not None:
+            cfg = await custom_order.load(db)
+            amount, error = custom_order.parse_amount(cfg, price_entry["value"])
+            if error:
+                await inter.response.send_message(
+                    embed=embeds.error_embed(error), view=ContinueOrderView(request), ephemeral=False
+                )
+                return
+            next_request = dataclasses.replace(request, overrides=((cfg.product_id, amount),))
+        await proceed_to_payment(inter, next_request, cleaned)
 
     await collect_dynamic_fields(interaction, fields, on_fields_complete)
 
@@ -1146,8 +1226,10 @@ async def finalize_order(
 
     # Harga & stok dihitung ULANG dari data terbaru, bukan dari tampilan
     # sebelumnya -- bisa aja udah berubah selama customer ngisi data.
-    lines = await checkout_util.build_lines(db, request.lines)
+    lines = await checkout_util.build_lines(db, request.lines, overrides=request.override_map)
     problem = "Produknya lagi gak tersedia." if not lines else checkout_util.first_problem(lines)
+    if not problem and any(l.is_custom and l.unit_price <= 0 for l in lines):
+        problem = "Nominal pesanan belum valid. Mulai lagi dari tombol Produk Lainnya ya."
     if problem:
         await interaction.followup.send(embed=embeds.error_embed(problem), ephemeral=False)
         return
