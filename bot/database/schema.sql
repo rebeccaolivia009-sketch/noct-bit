@@ -493,6 +493,27 @@ CREATE TABLE IF NOT EXISTS auto_reactions (
     updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Pengaturan "Produk Lainnya" (order produk di luar katalog). SATU baris
+-- (id = 1). Produknya sendiri produk SISTEM tersembunyi (product_id) yang
+-- field form-nya diatur lewat Catalog Builder -- jadi alur checkout-nya
+-- SAMA PERSIS dengan produk biasa. price_mode: input (customer isi nominal,
+-- dengan batas min/maks) | fixed (pakai fixed_price). Lihat bot.utils.custom_order.
+CREATE TABLE IF NOT EXISTS custom_order_config (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled         INTEGER NOT NULL DEFAULT 0,
+    product_id      INTEGER REFERENCES products(id) ON DELETE SET NULL,
+    label           TEXT NOT NULL DEFAULT 'Produk Lainnya',
+    description     TEXT,
+    emoji           TEXT,
+    price_mode      TEXT NOT NULL DEFAULT 'input',
+    fixed_price     REAL NOT NULL DEFAULT 0,
+    min_amount      REAL,
+    max_amount      REAL,
+    price_label     TEXT NOT NULL DEFAULT 'Nominal yang mau dibayar',
+    currency_label  TEXT,
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Panel chat per-order di channel order-log -- SATU pesan per order yang
 -- di-EDIT (bukan bikin pesan baru) tiap ada balesan customer ATAU staff,
 -- biar channel order-log gak kebanjiran notif baru buat obrolan yang
