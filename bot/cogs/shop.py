@@ -10,7 +10,7 @@ from bot.core.theme import COLOR_ACCENT
 from bot.database.queries import categories as categories_q
 from bot.database.queries import products as products_q
 from bot.ui import embeds
-from bot.ui.views import CategoryBrowseView, open_cart, start_purchase
+from bot.ui.views import CustomOrderBrowseButton, make_category_browse_view, open_cart, start_purchase
 
 
 async def _visible_product_autocomplete(
@@ -36,13 +36,15 @@ class ShopCog(commands.Cog):
             "Pilih kategori di bawah buat liat produk yang ada.",
             color=COLOR_ACCENT,
         )
+        view = await make_category_browse_view(self.bot.db, categories)
         if not categories:
-            embed.description = "Toko belum ada kategori yang aktif nih. Cek lagi nanti ya."
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        await interaction.response.send_message(
-            embed=embed, view=CategoryBrowseView(categories), ephemeral=True
-        )
+            # Tanpa kategori aktif, /shop tetap berguna kalau ada "Produk Lainnya".
+            if not any(isinstance(item, CustomOrderBrowseButton) for item in view.children):
+                embed.description = "Toko belum ada kategori yang aktif nih. Cek lagi nanti ya."
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            embed.description = "Belum ada produk di katalog, tapi kamu bisa pesen lewat tombol di bawah."
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @app_commands.command(name="buy", description="Beli produk langsung.")
     @app_commands.describe(

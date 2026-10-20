@@ -21,7 +21,8 @@ from discord.ext import commands, tasks
 
 from bot.core.logger import logger
 from bot.database.queries import shop_panel as shop_panel_q
-from bot.ui.views import ShopPanelView
+from bot.ui.views import ShopPanelView, _button_emoji
+from bot.utils import custom_order
 
 
 class ShopPanelTaskCog(commands.Cog):
@@ -35,6 +36,9 @@ class ShopPanelTaskCog(commands.Cog):
     @tasks.loop(seconds=10)
     async def refresh_loop(self) -> None:
         rows = await shop_panel_q.list_all(self.bot.db)
+        # Tombol "Produk Lainnya" ikut tampil di panel kalau fiturnya nyala --
+        # panel yang udah diposting otomatis ke-update lewat refresh ini.
+        custom = await custom_order.active(self.bot.db) if rows else None
         for row in rows:
             channel = self.bot.get_channel(row["channel_id"])
             if not isinstance(channel, discord.TextChannel):
@@ -54,6 +58,8 @@ class ShopPanelTaskCog(commands.Cog):
                 thumbnail_url=row["thumbnail_url"],
                 button_label=row["button_label"],
                 button_emoji=row["button_emoji"],
+                custom_label=custom.label if custom else None,
+                custom_emoji=_button_emoji(custom.emoji) if custom else None,
             )
             try:
                 await message.edit(view=view)
