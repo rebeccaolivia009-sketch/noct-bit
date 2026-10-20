@@ -30,6 +30,7 @@ from bot.database.queries import fields as fields_q
 from bot.database.queries import orders as orders_q
 from bot.database.queries import product_groups as product_groups_q
 from bot.database.queries import products as products_q
+from bot.utils import custom_order
 from bot.utils.helpers import calculate_final_price
 from bot.utils.stock import (
     SOURCE_GROUP,
@@ -53,6 +54,13 @@ class CheckoutRequest:
     (keranjang gak disentuh)."""
     lines: tuple[tuple[int, int], ...]
     from_cart: bool = False
+    # Harga yang ditentuin customer di form (cuma buat "Produk Lainnya" mode
+    # nominal): ((product_id, harga), ...). Kosong buat produk katalog biasa.
+    overrides: tuple[tuple[int, float], ...] = ()
+
+    @property
+    def override_map(self) -> dict[int, float]:
+        return {int(pid): float(price) for pid, price in self.overrides}
 
 
 @dataclass
@@ -64,6 +72,7 @@ class CartLine:
     line_total: float
     source: StockSource
     problem: str | None = None       # kalau diisi: line ini gak bisa di-checkout
+    is_custom: bool = False          # "Produk Lainnya" (produk sistem, lihat bot.utils.custom_order)
 
     @property
     def product_id(self) -> int:
@@ -109,7 +118,8 @@ async def _product_unavailable_reason(db: Database, product, group) -> str | Non
 
 
 async def build_lines(
-    db: Database, raw_lines, *, drop_missing_for: int | None = None
+    db: Database, raw_lines, *, drop_missing_for: int | None = None,
+    overrides: dict[int, float] | None = None,
 ) -> list[CartLine]:
     """Ubah daftar (product_id, quantity) jadi CartLine. Line yang gak bisa
     dibeli tetep dikembaliin dengan `.problem` keisi (biar UI bisa nunjukin
@@ -118,7 +128,14 @@ async def build_lines(
 
     Stok dicek PER POOL secara kumulatif: dua line yang narik dari pool
     sama saling ngurangin sisa, jadi total permintaan gak bisa lewat dari
-    isi pool walau tiap line sendirian kelihatan cukup."""
+    isi pool walau tiap line sendirian kelihatan cukup.
+
+    "Produk Lainnya" (produk sistem tersembunyi) diperlakukan khusus: qty
+    selalu 1, gak ikut aturan visibilitas katalog (cuma nyala/matinya fitur),
+    dan harganya -- di mode nominal -- diambil dari `overrides` (nominal yang
+    customer isi di form), 0 kalau belum diisi."""
+    overrides = overrides or {}
+    custom_cfg = await custom_order.load(db)
     lines: list[CartLine] = []
     for product_id, quantity in raw_lines:
         product = await products_q.get_product(db, int(product_id))
@@ -130,15 +147,28 @@ async def build_lines(
             await product_groups_q.get_product_group(db, product["product_group_id"])
             if product["product_group_id"] else None
         )
-        quantity = max(1, int(quantity))
-        unit_price = calculate_final_price(
-            product["base_price"], product["discount_type"], product["discount_value"]
-        )
+        is_custom = custom_cfg.product_id is not None and int(product["id"]) == custom_cfg.product_id
+        quantity = 1 if is_custom else max(1, int(quantity))
+        if is_custom:
+            # Sumber harga = pengaturan (bukan baris produk): nominal customer
+            # (mode input) atau harga tetap dari pengaturan.
+            unit_price = (
+                float(overrides.get(int(product["id"]), 0.0)) if custom_cfg.input_mode
+                else float(custom_cfg.fixed_price)
+            )
+        else:
+            unit_price = calculate_final_price(
+                product["base_price"], product["discount_type"], product["discount_value"]
+            )
         line = CartLine(
             product=product, group=group, quantity=quantity, unit_price=unit_price,
             line_total=round(unit_price * quantity, 2), source=resolve_source(product, group),
+            is_custom=is_custom,
         )
-        line.problem = await _product_unavailable_reason(db, product, group)
+        if is_custom:
+            line.problem = None if custom_cfg.enabled else "Fitur ini lagi gak tersedia."
+        else:
+            line.problem = await _product_unavailable_reason(db, product, group)
         lines.append(line)
 
     remaining: dict[tuple[str, int], int] = {}
@@ -227,7 +257,10 @@ async def add_to_cart(
     product = await products_q.get_product(db, product_id)
     if product is None:
         return False, "Produk gak ketemu."
+    if await custom_order.is_custom_product(db, product_id):
+        return False, "Produk ini gak bisa dimasukin keranjang -- pesen langsung lewat tombol-nya di panel order."
     group = (
+
         await product_groups_q.get_product_group(db, product["product_group_id"])
         if product["product_group_id"] else None
     )
@@ -333,6 +366,14 @@ async def collect_fields(db: Database, lines: list[CartLine]) -> list[dict]:
             else:
                 row["label"] = row["label"][:MODAL_LABEL_MAX]
             result.append(row)
+
+    # "Produk Lainnya" mode nominal: field nominal ditaruh PALING ATAS form.
+    custom_cfg = await custom_order.load(db)
+    if (
+        custom_cfg.product_id is not None and custom_cfg.input_mode
+        and any(line.product_id == custom_cfg.product_id for line in lines)
+    ):
+        result.insert(0, custom_order.price_field(custom_cfg))
     return result
 
 
