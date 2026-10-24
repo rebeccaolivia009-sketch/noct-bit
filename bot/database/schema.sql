@@ -514,6 +514,29 @@ CREATE TABLE IF NOT EXISTS custom_order_config (
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Permintaan "Produk Lainnya" mode "staff tentukan harga": customer isi
+-- form -> staff kasih harga -> customer lanjut bayar lewat alur checkout
+-- biasa (baru JADI order di titik itu). status: pending (nunggu harga) ->
+-- priced (nunggu customer) -> ordering (lagi dibayar, kunci anti-dobel) ->
+-- ordered | rejected | cancelled. fields_json = jawaban form.
+CREATE TABLE IF NOT EXISTS custom_quotes (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id           INTEGER NOT NULL,
+    product_id        INTEGER REFERENCES products(id) ON DELETE SET NULL,
+    fields_json       TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'pending',
+    price             REAL,
+    note              TEXT,
+    currency_label    TEXT,
+    staff_channel_id  INTEGER,
+    staff_message_id  INTEGER,
+    dm_channel_id     INTEGER,
+    dm_message_id     INTEGER,
+    order_id          INTEGER REFERENCES orders(id) ON DELETE SET NULL,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Panel chat per-order di channel order-log -- SATU pesan per order yang
 -- di-EDIT (bukan bikin pesan baru) tiap ada balesan customer ATAU staff,
 -- biar channel order-log gak kebanjiran notif baru buat obrolan yang
