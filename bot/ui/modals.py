@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable
 
 import discord
 
+from bot.core.logger import logger
 from bot.database.queries.fields import MODAL_BATCH_SIZE
 from bot.ui import embeds
 
@@ -62,6 +63,17 @@ class DynamicFieldsModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         values = {field_id: ti.value for field_id, ti in self._inputs.items()}
         await self._on_submit_callback(interaction, values)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        logger.exception("Error di modal Info Checkout.", exc_info=error)
+        try:
+            embed = embeds.error_embed("Ada yang error pas ngirim form. Coba lagi ya.")
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
 
 class _OpenNextBatchButton(discord.ui.Button):
