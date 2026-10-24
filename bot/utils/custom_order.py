@@ -8,9 +8,11 @@ Gimana ini nyambung ke alur yang udah ada:
     stok (unlimited), dan statistik jalan tanpa cabang khusus.
   * Form yang diisi customer = field checkout milik Category Type
     produk sistem itu, diatur lewat Catalog Builder (/customorder -> Atur Field).
-  * Harga: mode `input` -- customer ngisi NOMINAL sendiri di form (field
-    pertama, otomatis ditambahin di sini, batas min/maks dari pengaturan);
-    mode `fixed` -- harga tetap dari pengaturan.
+  * Harga SELALU ditentuin staff (customer gak pernah ngisi harga):
+      - `quote` (default): customer isi form -> permintaan masuk ke staff
+        -> staff set harga -> customer dapet DM buat lanjut bayar lewat
+        alur checkout biasa (baru jadi order di titik itu). Lihat bot.ui.quotes.
+      - `fixed`: harga tetap dari pengaturan; alurnya persis produk biasa.
 """
 
 from __future__ import annotations
@@ -23,18 +25,15 @@ from bot.database.queries import category_types as category_types_q
 from bot.database.queries import custom_order as custom_order_q
 from bot.database.queries import products as products_q
 from bot.utils.builder_spec import InputSpec, money_text, parse_money
-from bot.utils.helpers import format_price
 from bot.utils.validators import is_valid_emoji
 
-PRICE_FIELD_ID = -1          # id field "nominal" sintetis (gak ada di product_fields)
-MODES = ("input", "fixed")
-MODE_LABEL = {"input": "Customer isi nominal", "fixed": "Harga tetap"}
+MODES = ("quote", "fixed")
+MODE_LABEL = {"quote": "Staff tentukan harga", "fixed": "Harga tetap"}
 
 DEFAULT_LABEL = "Produk Lainnya"
 DEFAULT_DESCRIPTION = (
     "Pesen produk apa pun yang gak ada di katalog -- isi form-nya, nanti tim kami yang proses."
 )
-DEFAULT_PRICE_LABEL = "Nominal yang mau dibayar"
 SYSTEM_CATEGORY_NAME = "Produk Lainnya (sistem -- jangan dihapus)"
 SYSTEM_TYPE_NAME = "Form Produk Lainnya"
 MAX_LABEL = 40
@@ -48,17 +47,14 @@ class Config:
     label: str = DEFAULT_LABEL
     description: str | None = DEFAULT_DESCRIPTION
     emoji: str | None = None
-    price_mode: str = "input"
+    price_mode: str = "quote"
     fixed_price: float = 0.0
-    min_amount: float | None = None
-    max_amount: float | None = None
-    price_label: str = DEFAULT_PRICE_LABEL
     currency: str | None = None
     configured: bool = False     # baris pengaturan udah ada di DB (walau produk sistemnya hilang)
 
     @property
-    def input_mode(self) -> bool:
-        return self.price_mode == "input"
+    def quote_mode(self) -> bool:
+        return self.price_mode != "fixed"
 
 
 def _from_row(row) -> Config:
@@ -66,9 +62,10 @@ def _from_row(row) -> Config:
         return Config()
     return Config(
         enabled=bool(row["enabled"]), product_id=row["product_id"], label=row["label"] or DEFAULT_LABEL,
-        description=row["description"], emoji=row["emoji"], price_mode=row["price_mode"] or "input",
-        fixed_price=float(row["fixed_price"] or 0), min_amount=row["min_amount"], max_amount=row["max_amount"],
-        price_label=row["price_label"] or DEFAULT_PRICE_LABEL, currency=row["currency_label"],
+        description=row["description"], emoji=row["emoji"],
+        # Mode "input" (customer isi nominal) udah dihapus -- harga ditentuin staff.
+        price_mode="fixed" if row["price_mode"] == "fixed" else "quote",
+        fixed_price=float(row["fixed_price"] or 0), currency=row["currency_label"],
         configured=True,
     )
 
@@ -93,38 +90,15 @@ async def is_custom_product(db: Database, product_id: int) -> bool:
 
 
 # ============================================================================
-# FIELD NOMINAL & PARSING
+# HARGA DARI STAFF
 # ============================================================================
 
-def price_field(cfg: Config) -> dict:
-    """Field "nominal" sintetis -- ditaruh PALING ATAS form (mode input)."""
-    hint = []
-    if cfg.min_amount:
-        hint.append(f"min {parse_text(cfg.min_amount)}")
-    if cfg.max_amount:
-        hint.append(f"maks {parse_text(cfg.max_amount)}")
-    placeholder = "Contoh: 150000" + (f" ({', '.join(hint)})" if hint else "")
-    return {
-        "id": PRICE_FIELD_ID, "label": cfg.price_label[:45], "field_type": "custom", "required": 1,
-        "placeholder": placeholder[:100], "min_length": 1, "max_length": 15, "validation": "none",
-    }
-
-
-def parse_text(amount: float) -> str:
-    return str(int(amount)) if float(amount) == int(amount) else f"{amount:g}"
-
-
-def parse_amount(cfg: Config, text: str) -> tuple[float | None, str | None]:
-    """Teks nominal dari customer -> (angka, pesan error). Terima '150000',
+def parse_price(text: str | None) -> tuple[float | None, str | None]:
+    """Harga yang diketik staff -> (angka, pesan error). Terima '150000',
     '150.000', 'Rp 150.000'."""
     amount = parse_money(text)
     if amount is None or amount <= 0:
-        return None, f"{cfg.price_label}: isi dengan angka lebih dari 0 (contoh 150000)."
-    currency = cfg.currency or ""
-    if cfg.min_amount and amount < cfg.min_amount:
-        return None, f"{cfg.price_label} minimal {format_price(cfg.min_amount, currency).strip()}."
-    if cfg.max_amount and amount > cfg.max_amount:
-        return None, f"{cfg.price_label} maksimal {format_price(cfg.max_amount, currency).strip()}."
+        return None, "Harga harus angka lebih dari 0 (contoh 150000)."
     return amount, None
 
 
@@ -141,12 +115,9 @@ FORMS: dict[str, tuple[InputSpec, ...]] = {
         InputSpec("emoji", "Emoji tombol", parser="emoji", max_length=40, placeholder="Opsional, misal \U0001F4DD"),
     ),
     "price": (
-        InputSpec("price_label", "Label field nominal", required=True, max_length=45,
-                  placeholder="Contoh: Nominal yang mau dibayar"),
         InputSpec("currency_label", "Mata uang", max_length=20, placeholder="Kosong = mata uang toko"),
-        InputSpec("fixed_price", "Harga tetap", parser="money", max_length=20, placeholder="Dipakai mode Harga tetap"),
-        InputSpec("min_amount", "Nominal minimal", parser="money", max_length=20, placeholder="Opsional (mode nominal)"),
-        InputSpec("max_amount", "Nominal maksimal", parser="money", max_length=20, placeholder="Opsional (mode nominal)"),
+        InputSpec("fixed_price", "Harga tetap", parser="money", max_length=20,
+                  placeholder="Cuma dipakai mode Harga tetap"),
     ),
 }
 FORM_TITLE = {"text": "Produk Lainnya: Teks", "price": "Produk Lainnya: Harga"}
@@ -166,16 +137,14 @@ def form_defaults(form: str, values: dict) -> dict[str, str]:
 def defaults() -> dict:
     return {
         "enabled": 1, "label": DEFAULT_LABEL, "description": DEFAULT_DESCRIPTION, "emoji": None,
-        "price_mode": "input", "fixed_price": 0.0, "min_amount": None, "max_amount": None,
-        "price_label": DEFAULT_PRICE_LABEL, "currency_label": None,
+        "price_mode": "quote", "fixed_price": 0.0, "currency_label": None,
     }
 
 
 def values_from_config(cfg: Config) -> dict:
     return {
         "enabled": int(cfg.enabled), "label": cfg.label, "description": cfg.description, "emoji": cfg.emoji,
-        "price_mode": cfg.price_mode, "fixed_price": cfg.fixed_price, "min_amount": cfg.min_amount,
-        "max_amount": cfg.max_amount, "price_label": cfg.price_label, "currency_label": cfg.currency,
+        "price_mode": cfg.price_mode, "fixed_price": cfg.fixed_price, "currency_label": cfg.currency,
     }
 
 
@@ -188,15 +157,8 @@ def validate(v: dict) -> list[str]:
         problems.append(f"Nama maksimal {MAX_LABEL} karakter.")
     if v.get("emoji") and not is_valid_emoji(v["emoji"]):
         problems.append("Emoji gak valid.")
-    if v.get("price_mode") == "fixed":
-        if float(v.get("fixed_price") or 0) <= 0:
-            problems.append("Harga tetap belum diisi (harus lebih dari 0).")
-    else:
-        if not (v.get("price_label") or "").strip():
-            problems.append("Label field nominal belum diisi.")
-        lo, hi = v.get("min_amount"), v.get("max_amount")
-        if lo is not None and hi is not None and float(hi) < float(lo):
-            problems.append("Nominal maksimal gak boleh lebih kecil dari minimal.")
+    if v.get("price_mode") == "fixed" and float(v.get("fixed_price") or 0) <= 0:
+        problems.append("Harga tetap belum diisi (harus lebih dari 0).")
     return problems
 
 
@@ -218,22 +180,16 @@ def apply_form(form: str, raw: dict) -> tuple[dict, list[str]]:
         else:
             updates["emoji"] = emoji or None
     else:  # price
-        price_label = text("price_label")
-        if not price_label:
-            errors.append("Label field nominal wajib diisi.")
-        else:
-            updates["price_label"] = price_label[:45]
         updates["currency_label"] = text("currency_label")[:20] or None
-        for key, label in (("fixed_price", "Harga tetap"), ("min_amount", "Nominal minimal"), ("max_amount", "Nominal maksimal")):
-            value = text(key)
-            if not value:
-                updates[key] = 0.0 if key == "fixed_price" else None
-                continue
+        value = text("fixed_price")
+        if not value:
+            updates["fixed_price"] = 0.0
+        else:
             amount = parse_money(value)
             if amount is None:
-                errors.append(f"{label}: '{value}' bukan angka yang valid.")
+                errors.append(f"Harga tetap: '{value}' bukan angka yang valid.")
             else:
-                updates[key] = amount
+                updates["fixed_price"] = amount
     return updates, errors
 
 
@@ -247,7 +203,7 @@ async def ensure_product(db: Database, values: dict, *, currency_fallback: str) 
     kehapus (misal staff ngapus kategorinya lewat Builder)."""
     cfg = await load(db)
     currency = values.get("currency_label") or currency_fallback
-    base_price = float(values.get("fixed_price") or 0) if values.get("price_mode") == "fixed" else 0.0
+    base_price = float(values.get("fixed_price") or 0) if values.get("price_mode") == "fixed" else 0.0   # quote: harga per pesanan, diisi staff
     name = (values.get("label") or DEFAULT_LABEL).strip()[:100]
     description = values.get("description")
     emoji = values.get("emoji")
@@ -278,9 +234,7 @@ async def save(db: Database, values: dict, *, currency_fallback: str) -> Config:
     await custom_order_q.save_config(db, {
         "enabled": int(bool(values.get("enabled"))), "product_id": product_id,
         "label": (values.get("label") or DEFAULT_LABEL).strip(), "description": values.get("description"),
-        "emoji": values.get("emoji"), "price_mode": values.get("price_mode", "input"),
-        "fixed_price": float(values.get("fixed_price") or 0), "min_amount": values.get("min_amount"),
-        "max_amount": values.get("max_amount"), "price_label": (values.get("price_label") or DEFAULT_PRICE_LABEL).strip(),
-        "currency_label": values.get("currency_label"),
+        "emoji": values.get("emoji"), "price_mode": "fixed" if values.get("price_mode") == "fixed" else "quote",
+        "fixed_price": float(values.get("fixed_price") or 0), "currency_label": values.get("currency_label"),
     })
     return await load(db)
