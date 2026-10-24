@@ -16,9 +16,10 @@ import discord
 
 from bot.core.logger import logger
 from bot.core.theme import COLOR_ACCENT, COLOR_DANGER, COLOR_PRIMARY
+from bot.database.queries import custom_quotes as quotes_q
 from bot.database.queries import fields as fields_q
 from bot.database.queries import products as products_q
-from bot.ui import embeds
+from bot.ui import embeds, quotes
 from bot.ui.builder import HOME, Btn, Builder, FormModal
 from bot.utils import builder_store as store
 from bot.utils import custom_order as co
@@ -29,8 +30,7 @@ OWNER_ONLY = "Panel ini punya staff lain -- jalanin `/customorder` buat buka pan
 
 KEY_LABEL = {
     "enabled": "Status", "label": "Nama", "description": "Deskripsi", "emoji": "Emoji",
-    "price_mode": "Mode harga", "fixed_price": "Harga tetap", "min_amount": "Nominal minimal",
-    "max_amount": "Nominal maksimal", "price_label": "Label nominal", "currency_label": "Mata uang",
+    "price_mode": "Mode harga", "fixed_price": "Harga tetap", "currency_label": "Mata uang",
 }
 
 
@@ -126,13 +126,6 @@ class CustomOrderPanel:
         lines = [f"## {title}", "-# Pratinjau tombol & form yang dilihat customer", v.get("description") or "*Belum ada deskripsi.*", ""]
 
         steps: list[str] = []
-        if v["price_mode"] == "input":
-            hint = []
-            if v.get("min_amount"):
-                hint.append(f"min {format_price(float(v['min_amount']), currency)}")
-            if v.get("max_amount"):
-                hint.append(f"maks {format_price(float(v['max_amount']), currency)}")
-            steps.append(f"**{v.get('price_label') or co.DEFAULT_PRICE_LABEL}** \u2014 wajib \u00B7 nominal" + (f" ({', '.join(hint)})" if hint else ""))
         for f in await self._form_fields(db):
             steps.append(f"**{f['label']}** \u2014 {'wajib' if f['required'] else 'opsional'} \u00B7 {f['min_length']}-{f['max_length']} karakter")
         lines.append("**Form yang diisi customer**")
@@ -142,9 +135,9 @@ class CustomOrderPanel:
             lines.append("*Belum ada field -- tambahin lewat tombol Atur Field.*")
         lines.append("")
         if v["price_mode"] == "fixed":
-            lines.append(f"**Harga:** {format_price(float(v.get('fixed_price') or 0), currency)} (tetap)")
+            lines.append(f"**Harga:** {format_price(float(v.get('fixed_price') or 0), currency)} (tetap, ditentuin staff)")
         else:
-            lines.append("**Harga:** customer isi sendiri di form")
+            lines.append("**Harga:** ditentuin staff setelah customer isi form, lalu customer dapat DM buat lanjut bayar")
         return discord.ui.Container(
             discord.ui.TextDisplay("\n".join(lines)),
             discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
@@ -180,6 +173,15 @@ class CustomOrderPanel:
         if self.existing and not await self._product_alive(bot.db):
             controls.append(discord.ui.TextDisplay("\u26A0\uFE0F Produk sistemnya hilang (kehapus?). Klik Simpan buat bikin ulang."))
 
+        warnings = await self._readiness_warnings(bot)
+        if warnings:
+            controls.append(discord.ui.TextDisplay("\n".join(f"\u26A0\uFE0F {w}" for w in warnings)))
+        waiting, priced = await quotes_q.count_open(bot.db)
+        if waiting or priced:
+            controls.append(discord.ui.TextDisplay(
+                f"\U0001F4EC Permintaan terbuka: **{waiting}** nunggu harga dari staff \u00B7 **{priced}** nunggu customer"
+            ))
+
         controls.append(discord.ui.ActionRow(
             self.btn(self._form("text"), label="Teks", emoji="\u270F\uFE0F", style=_STYLE.primary),
             self.btn(self._form("price"), label="Harga", emoji="\U0001F4B0", style=_STYLE.primary),
@@ -198,6 +200,17 @@ class CustomOrderPanel:
             await self._preview(bot.db),
             discord.ui.Container(*controls, accent_colour=COLOR_DANGER if problems else COLOR_PRIMARY),
         ])
+
+    async def _readiness_warnings(self, bot) -> list[str]:
+        """Hal yang bikin customer GAK bisa mesen walau fitur nyala (mode harga staff)."""
+        if not self.values["enabled"] or self.values["price_mode"] != "quote":
+            return []
+        out = []
+        if not (await quotes.can_accept(bot))[0]:
+            out.append("Channel order-log belum diatur -- permintaan customer gak bisa dikirim ke staff.")
+        if self.product_id and not await self._form_fields(bot.db):
+            out.append("Form masih kosong -- customer belum bisa mesen sebelum ada minimal 1 field (Atur Field).")
+        return out
 
     async def _product_alive(self, db) -> bool:
         return bool(self.product_id) and await products_q.get_product(db, self.product_id) is not None
@@ -226,7 +239,7 @@ class CustomOrderPanel:
         return handler
 
     async def _cycle_mode(self, interaction: discord.Interaction) -> None:
-        self.values["price_mode"] = "fixed" if self.values["price_mode"] == "input" else "input"
+        self.values["price_mode"] = "fixed" if self.values["price_mode"] == "quote" else "quote"
         await self.refresh(interaction)
 
     async def _toggle(self, interaction: discord.Interaction) -> None:

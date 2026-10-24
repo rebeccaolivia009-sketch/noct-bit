@@ -44,11 +44,15 @@ class DynamicFieldsModal(discord.ui.Modal):
         self._inputs: dict[int, discord.ui.TextInput] = {}
 
         for field_row in fields_batch:
+            required = bool(field_row["required"])
             text_input = discord.ui.TextInput(
                 label=field_row["label"][:45],
                 placeholder=(field_row["placeholder"] or "")[:100] or None,
-                required=bool(field_row["required"]),
-                min_length=max(0, field_row["min_length"] or 0),
+                required=required,
+                # Field wajib dikunci minimal 1 karakter juga di sisi Discord --
+                # sebagian klien (terutama mobile) bisa ngirim field wajib
+                # kosong kalau cuma ngandelin `required`.
+                min_length=max(1 if required else 0, field_row["min_length"] or 0),
                 max_length=min(max(field_row["max_length"] or 100, 1), 4000),
                 style=_style_for(field_row),
             )
@@ -60,44 +64,80 @@ class DynamicFieldsModal(discord.ui.Modal):
         await self._on_submit_callback(interaction, values)
 
 
+class _OpenNextBatchButton(discord.ui.Button):
+    def __init__(self, label: str, opener: Callable[[discord.Interaction], Awaitable[None]]) -> None:
+        super().__init__(label=label, emoji="\U0001F4DD", style=discord.ButtonStyle.success)
+        self._opener = opener
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await self._opener(interaction)
+
+
+async def _delete_quietly(messages: list[discord.Message]) -> None:
+    for message in messages:
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            pass
+
+
 async def collect_dynamic_fields(
     interaction: discord.Interaction,
     fields: list,
     on_complete: Callable[[discord.Interaction, dict], Awaitable[None]],
 ) -> None:
     """
-    Mulai (bisa berantai) modal buat ngumpulin value `fields`.
+    Ngumpulin value `fields` lewat modal (maks 5 input per modal -- batas
+    Discord, jadi form yang lebih panjang dipecah beberapa bagian).
 
-    `on_complete(interaction, {field_id: value})` di-await begitu semua
-    batch udah disubmit. Discord modal maksimal 5 text input, jadi field
-    dipecah jadi beberapa batch dan dirantai: tiap submit modal buka modal
-    berikutnya sebagai respon *awal*-nya (Discord ngewajibin ini -- gak bisa
-    defer terus baru buka modal belakangan).
+    `on_complete(interaction, {field_id: value})` HANYA dipanggil setelah
+    SEMUA bagian disubmit -- gak ada langkah selanjutnya (pembayaran, dst)
+    yang jalan sebelum itu. Kalau customer nutup/batalin modal, gak ada
+    yang terjadi: prompt yang ngebuka modal tetep ada, tinggal diklik lagi.
+
+    Discord GAK ngebolehin sebuah modal dibales modal lain, jadi antar
+    bagian ada pesan dengan tombol "Lanjut isi data" (klik tombol boleh
+    ngebuka modal). Pesan-pesan perantara itu dihapus begitu form lengkap.
     """
     batches = [
         fields[i : i + MODAL_BATCH_SIZE] for i in range(0, len(fields), MODAL_BATCH_SIZE)
     ]
     collected: dict[int, str] = {}
+    prompts: list[discord.Message] = []
 
-    async def handle_batch(batch_index: int, inter: discord.Interaction, values: dict) -> None:
+    def modal_for(index: int) -> DynamicFieldsModal:
+        title = "Info Checkout" if len(batches) == 1 else f"Info Checkout ({index + 1}/{len(batches)})"
+        return DynamicFieldsModal(
+            title=title,
+            fields_batch=batches[index],
+            on_submit_callback=lambda i, v: handle_batch(index, i, v),
+        )
+
+    async def handle_batch(index: int, inter: discord.Interaction, values: dict) -> None:
         collected.update(values)
-        next_index = batch_index + 1
+        next_index = index + 1
         if next_index < len(batches):
-            modal = DynamicFieldsModal(
-                title=f"Info Checkout ({next_index + 1}/{len(batches)})",
-                fields_batch=batches[next_index],
-                on_submit_callback=lambda i, v: handle_batch(next_index, i, v),
-            )
-            await inter.response.send_modal(modal)
-        else:
-            await on_complete(inter, collected)
+            async def open_next(next_inter: discord.Interaction) -> None:
+                await next_inter.response.send_modal(modal_for(next_index))
 
-    first_modal = DynamicFieldsModal(
-        title=f"Info Checkout (1/{len(batches)})" if len(batches) > 1 else "Info Checkout",
-        fields_batch=batches[0],
-        on_submit_callback=lambda i, v: handle_batch(0, i, v),
-    )
-    await interaction.response.send_modal(first_modal)
+            view = discord.ui.View(timeout=600)
+            view.add_item(_OpenNextBatchButton(f"Lanjut isi data ({next_index + 1}/{len(batches)})", open_next))
+            await inter.response.send_message(
+                embed=embeds.info_embed(
+                    "Data Tersimpan Sementara",
+                    f"Bagian {index + 1} dari {len(batches)} udah masuk. Klik tombol di bawah buat ngisi bagian berikutnya.",
+                ),
+                view=view,
+            )
+            try:
+                prompts.append(await inter.original_response())
+            except discord.HTTPException:
+                pass
+            return
+        await _delete_quietly(prompts)
+        await on_complete(inter, collected)
+
+    await interaction.response.send_modal(modal_for(0))
 
 
 class ReviewTextModal(discord.ui.Modal):

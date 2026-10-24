@@ -28,7 +28,6 @@ Persistent views/items (survive restart bot):
 
 from __future__ import annotations
 
-import dataclasses
 import math
 from datetime import datetime, timezone
 
@@ -36,6 +35,7 @@ import discord
 
 from bot.core.logger import logger
 from bot.core.theme import COLOR_ACCENT
+from bot.database.queries import custom_quotes as custom_quotes_q
 from bot.database.queries import (
     cart as cart_q,
     categories as categories_q,
@@ -156,6 +156,22 @@ async def start_custom_order(interaction: discord.Interaction) -> None:
             embed=embeds.error_embed("Fitur ini lagi gak tersedia. Coba lagi nanti ya."), ephemeral=True
         )
         return
+    if cfg.quote_mode:
+        # Mode "staff tentukan harga": permintaan dikirim ke channel order-log,
+        # dan form-nya harus udah diatur -- cek DULU sebelum customer disuruh ngisi.
+        from bot.ui import quotes
+
+        accepted, error = await quotes.can_accept(interaction.client)
+        if not accepted:
+            await interaction.response.send_message(embed=embeds.error_embed(error), ephemeral=True)
+            return
+        product = await products_q.get_product(db, cfg.product_id)
+        if not await fields_q.list_fields(db, product["category_type_id"]):
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Form pesanan ini belum diatur staff, jadi belum bisa dipesen. Coba lagi nanti ya."),
+                ephemeral=True,
+            )
+            return
     await start_checkout(interaction, checkout_util.CheckoutRequest(((cfg.product_id, 1),)))
 
 
@@ -860,10 +876,13 @@ async def start_checkout(interaction: discord.Interaction, request: checkout_uti
 
     currency = lines[0].currency
     custom_cfg = await custom_order.load(db)
-    if any(l.is_custom for l in lines) and custom_cfg.input_mode and not request.overrides:
-        # "Produk Lainnya" mode nominal: harganya belum ada -- diisi customer di form.
+    if any(l.is_custom for l in lines) and custom_cfg.quote_mode and not request.overrides:
+        # "Produk Lainnya" mode quote: harga belum ada -- staff yang nentuin setelah form diisi.
         intro = f"{custom_cfg.description}\n\n" if custom_cfg.description else ""
-        body = f"{intro}Klik di bawah buat lanjutin pesen. **{custom_cfg.price_label}** kamu isi di form langkah berikutnya."
+        body = (
+            f"{intro}Klik di bawah buat ngisi form pesananmu. Setelah itu staff bakal nentuin harganya, "
+            "dan kamu dapat DM buat lanjut ke pembayaran."
+        )
     else:
         summary = checkout_util.describe_lines(lines)
         total = format_price(checkout_util.subtotal(lines), currency)
@@ -913,8 +932,10 @@ class ContinueOrderButton(discord.ui.Button):
         self.request = request
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await proceed_to_fields(interaction, self.request)
-        await _delete_source_message(interaction)
+        # Prompt ini SENGAJA gak dihapus di sini: kalau customer nutup/batalin
+        # modal, dia masih bisa klik tombol ini lagi. Prompt dihapus begitu
+        # form lengkap (atau udah gak relevan) -- lihat proceed_to_fields.
+        await proceed_to_fields(interaction, self.request, source_message=interaction.message)
 
 
 class ContinueOrderView(discord.ui.View):
@@ -923,7 +944,28 @@ class ContinueOrderView(discord.ui.View):
         self.add_item(ContinueOrderButton(request))
 
 
-async def proceed_to_fields(interaction: discord.Interaction, request: checkout_util.CheckoutRequest) -> None:
+async def _delete_message(message: discord.Message | None) -> None:
+    if message is None:
+        return
+    try:
+        await message.delete()
+    except discord.HTTPException:
+        pass  # udah ilang / gak bisa dihapus -- gapapa
+
+
+async def proceed_to_fields(
+    interaction: discord.Interaction,
+    request: checkout_util.CheckoutRequest,
+    *,
+    source_message: discord.Message | None = None,
+) -> None:
+    """Kumpulin jawaban form (modal), baru lanjut ke langkah berikutnya.
+
+    Langkah berikutnya (pembayaran, atau permintaan ke staff buat "Produk
+    Lainnya" mode quote) HANYA jalan setelah SEMUA field wajib terisi dan
+    lolos validasi. `source_message` = prompt "Lanjutin Order" yang ngebuka
+    modal ini: dihapus cuma begitu form lengkap, jadi kalau customer batal
+    di tengah jalan dia bisa klik tombolnya lagi (gak terjebak)."""
     db = interaction.client.db  # type: ignore[attr-defined]
 
     # Validasi ulang -- stok/harga/ketersediaan bisa berubah sejak prompt DM dikirim.
@@ -931,10 +973,22 @@ async def proceed_to_fields(interaction: discord.Interaction, request: checkout_
     problem = "Produknya lagi gak tersedia." if not lines else checkout_util.first_problem(lines)
     if problem:
         await interaction.response.send_message(embed=embeds.error_embed(problem), ephemeral=False)
+        await _delete_message(source_message)
         return
 
     fields = await checkout_util.collect_fields(db, lines)
+    quote_flow = any(l.is_custom for l in lines) and (await custom_order.load(db)).quote_mode
+
+    if quote_flow and not fields:
+        # Permintaan tanpa form = gak ada yang bisa dikirim ke staff. Jangan
+        # lompat ke pembayaran; tahan sampai staff ngatur form-nya.
+        await interaction.response.send_message(
+            embed=embeds.error_embed("Form pesanan ini belum diatur staff, jadi belum bisa dipesen. Coba lagi nanti ya."),
+            ephemeral=False,
+        )
+        return
     if not fields:
+        await _delete_message(source_message)
         await proceed_to_payment(interaction, request, [])
         return
 
@@ -959,8 +1013,8 @@ async def proceed_to_fields(interaction: discord.Interaction, request: checkout_
                 errors.append(str(exc))
 
         if errors:
-            # Prompt "Lanjutin Order" yang tadi udah kehapus, jadi kasih
-            # lagi biar customer bisa ngulang tanpa harus mulai dari toko.
+            # Prompt lama diganti yang baru biar gak numpuk dua tombol.
+            await _delete_message(source_message)
             await inter.response.send_message(
                 embed=embeds.error_embed("\n".join(errors)),
                 view=ContinueOrderView(request),
@@ -968,20 +1022,13 @@ async def proceed_to_fields(interaction: discord.Interaction, request: checkout_
             )
             return
 
-        # "Produk Lainnya" mode nominal: field nominal (paling atas di form)
-        # jadi HARGA order. Divalidasi (angka, min/maks) sebelum lanjut.
-        next_request = request
-        price_entry = next((c for c in cleaned if c["field_id"] == custom_order.PRICE_FIELD_ID), None)
-        if price_entry is not None:
-            cfg = await custom_order.load(db)
-            amount, error = custom_order.parse_amount(cfg, price_entry["value"])
-            if error:
-                await inter.response.send_message(
-                    embed=embeds.error_embed(error), view=ContinueOrderView(request), ephemeral=False
-                )
-                return
-            next_request = dataclasses.replace(request, overrides=((cfg.product_id, amount),))
-        await proceed_to_payment(inter, next_request, cleaned)
+        await _delete_message(source_message)
+        if quote_flow:
+            from bot.ui import quotes
+
+            await quotes.submit_quote(inter, request, cleaned)
+            return
+        await proceed_to_payment(inter, request, cleaned)
 
     await collect_dynamic_fields(interaction, fields, on_fields_complete)
 
@@ -1170,6 +1217,7 @@ async def _finalize_credit_order(
     await orders_q.set_payment_status(db, order_id, "paid")
     if request.from_cart:
         await cart_q.remove_many(db, interaction.user.id, [l.product_id for l in lines])
+    await _link_quote(interaction, request, order_id)
 
     order_row = await orders_q.get_order(db, order_id)
     saved_fields = await orders_q.get_field_values(db, order_id)
@@ -1219,6 +1267,56 @@ async def finalize_order(
     field_values: list,
     payment,
 ) -> None:
+    """Bikin order dari request. Buat penawaran "Produk Lainnya" (quote_id)
+    penawarannya DIKUNCI dulu -- dua klik barengan gak bisa jadi dua order --
+    dan harganya dicek masih sama dengan yang customer lihat."""
+    if request.quote_id is None:
+        await _finalize_order_impl(interaction, request, field_values, payment)
+        return
+
+    if not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=False, thinking=True)
+    db = interaction.client.db  # type: ignore[attr-defined]
+    quote = await custom_quotes_q.get(db, request.quote_id)
+    expected = request.override_map.get(int(quote["product_id"])) if quote and quote["product_id"] else None
+    if (
+        quote is None or quote["user_id"] != interaction.user.id or quote["price"] is None
+        or expected is None or abs(float(quote["price"]) - expected) > 0.005
+    ):
+        await interaction.followup.send(
+            embed=embeds.error_embed(
+                "Harga penawaran ini berubah atau penawarannya udah gak berlaku. Buka lagi dari DM penawaran terbaru ya."
+            ),
+            ephemeral=False,
+        )
+        return
+    if not await custom_quotes_q.claim(db, request.quote_id):
+        await interaction.followup.send(
+            embed=embeds.error_embed("Penawaran ini udah dipakai atau dibatalin. Hubungi staff kalau ada yang salah."),
+            ephemeral=False,
+        )
+        return
+    try:
+        await _finalize_order_impl(interaction, request, field_values, payment)
+    finally:
+        await custom_quotes_q.release(db, request.quote_id)   # no-op kalau udah jadi order
+
+
+async def _link_quote(interaction: discord.Interaction, request: checkout_util.CheckoutRequest, order_id: int) -> None:
+    """Tautin penawaran ke order yang baru jadi (status 'ordered', pesan staff
+    di-update, DM penawaran customer dibersihin)."""
+    if request.quote_id is not None:
+        from bot.ui import quotes
+
+        await quotes.complete_quote(interaction.client, request.quote_id, order_id)
+
+
+async def _finalize_order_impl(
+    interaction: discord.Interaction,
+    request: checkout_util.CheckoutRequest,
+    field_values: list,
+    payment,
+) -> None:
     if not interaction.response.is_done():
         await interaction.response.defer(ephemeral=False, thinking=True)
 
@@ -1257,6 +1355,7 @@ async def finalize_order(
         return
     if request.from_cart:
         await cart_q.remove_many(db, interaction.user.id, [l.product_id for l in lines])
+    await _link_quote(interaction, request, order_id)
 
     order_row = await orders_q.get_order(db, order_id)
     saved_fields = await orders_q.get_field_values(db, order_id)
