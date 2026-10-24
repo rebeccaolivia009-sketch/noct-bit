@@ -54,9 +54,12 @@ class CheckoutRequest:
     (keranjang gak disentuh)."""
     lines: tuple[tuple[int, int], ...]
     from_cart: bool = False
-    # Harga yang ditentuin customer di form (cuma buat "Produk Lainnya" mode
-    # nominal): ((product_id, harga), ...). Kosong buat produk katalog biasa.
+    # Harga yang ditentuin STAFF buat "Produk Lainnya" mode quote:
+    # ((product_id, harga), ...). Kosong buat produk katalog biasa.
     overrides: tuple[tuple[int, float], ...] = ()
+    # Penawaran (custom_quotes) yang lagi dibayar lewat request ini -- dikunci
+    # pas finalize biar gak bisa jadi dua order, dan ditautin ke order-nya.
+    quote_id: int | None = None
 
     @property
     def override_map(self) -> dict[int, float]:
@@ -132,8 +135,8 @@ async def build_lines(
 
     "Produk Lainnya" (produk sistem tersembunyi) diperlakukan khusus: qty
     selalu 1, gak ikut aturan visibilitas katalog (cuma nyala/matinya fitur),
-    dan harganya -- di mode nominal -- diambil dari `overrides` (nominal yang
-    customer isi di form), 0 kalau belum diisi."""
+    dan harganya SELALU dari staff: harga tetap dari pengaturan, atau (mode
+    quote) dari `overrides` -- harga penawaran yang staff set; 0 kalau belum ada."""
     overrides = overrides or {}
     custom_cfg = await custom_order.load(db)
     lines: list[CartLine] = []
@@ -150,10 +153,10 @@ async def build_lines(
         is_custom = custom_cfg.product_id is not None and int(product["id"]) == custom_cfg.product_id
         quantity = 1 if is_custom else max(1, int(quantity))
         if is_custom:
-            # Sumber harga = pengaturan (bukan baris produk): nominal customer
-            # (mode input) atau harga tetap dari pengaturan.
+            # Sumber harga = staff (bukan baris produk, bukan customer): harga
+            # penawaran (mode quote) atau harga tetap dari pengaturan.
             unit_price = (
-                float(overrides.get(int(product["id"]), 0.0)) if custom_cfg.input_mode
+                float(overrides.get(int(product["id"]), 0.0)) if custom_cfg.quote_mode
                 else float(custom_cfg.fixed_price)
             )
         else:
@@ -366,14 +369,6 @@ async def collect_fields(db: Database, lines: list[CartLine]) -> list[dict]:
             else:
                 row["label"] = row["label"][:MODAL_LABEL_MAX]
             result.append(row)
-
-    # "Produk Lainnya" mode nominal: field nominal ditaruh PALING ATAS form.
-    custom_cfg = await custom_order.load(db)
-    if (
-        custom_cfg.product_id is not None and custom_cfg.input_mode
-        and any(line.product_id == custom_cfg.product_id for line in lines)
-    ):
-        result.insert(0, custom_order.price_field(custom_cfg))
     return result
 
 
