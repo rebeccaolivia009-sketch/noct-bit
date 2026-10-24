@@ -8,6 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.ui.customorder import CustomOrderPanel
+from bot.ui.quotes import QUOTE_ITEMS
 from bot.utils import custom_order
 from bot.utils.permissions import staff_only
 
@@ -17,6 +18,13 @@ class CustomOrderCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+
+    async def cog_load(self) -> None:
+        # Tombol penawaran (Set Harga / Tolak / Lanjut Bayar / Batalkan) persisten.
+        self.bot.add_dynamic_items(*QUOTE_ITEMS)
+
+    async def cog_unload(self) -> None:
+        self.bot.remove_dynamic_items(*QUOTE_ITEMS)
 
     @app_commands.command(
         name="customorder",
